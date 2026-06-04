@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -119,8 +120,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	_ = s.Send(chatID, routingHeader(project, c.Title, !c.Started))
 
 	startTime := time.Now()
+	prompt := buildContextPrompt(text, c.History)
 	res, err := m.client.Run(ctx, RunRequest{
-		Prompt:    text,
+		Prompt:    prompt,
 		WorkDir:   p.Path,
 		SessionID: c.SessionID,
 		Resume:    c.Started,
@@ -138,12 +140,20 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 
 	_ = sendChunked(s, chatID, res.Text)
 
-	// Persist conversation progress.
+	// Persist conversation progress and history.
 	c.Started = true
 	c.LastActivity = time.Now().UTC()
 	if res.Text != "" {
 		c.Summary = truncate(res.Text, 80)
 	}
+
+	// Append this turn to conversation history for context preservation
+	c.History = append(c.History, ConversationTurn{
+		Timestamp: time.Now().UTC(),
+		Prompt:    text,
+		Response:  res.Text,
+	})
+
 	if err := m.store.UpdateConversation(project, c); err != nil {
 		log.Printf("[manager] update conversation: %v", err)
 	}
@@ -182,4 +192,26 @@ func formatCompletion(elapsed time.Duration) string {
 	}
 
 	return fmt.Sprintf("✅ 작업 완료 (%s)", duration)
+}
+
+// buildContextPrompt prepends conversation history to the current prompt for context continuity.
+func buildContextPrompt(currentPrompt string, history []ConversationTurn) string {
+	if len(history) == 0 {
+		return currentPrompt
+	}
+
+	var sb strings.Builder
+	sb.WriteString("## 이전 대화 기록\n\n")
+
+	for i, turn := range history {
+		sb.WriteString(fmt.Sprintf("**Turn %d** (%s)\n", i+1, turn.Timestamp.Format("2006-01-02 15:04")))
+		sb.WriteString(fmt.Sprintf("**요청:** %s\n", turn.Prompt))
+		sb.WriteString(fmt.Sprintf("**응답:** %s\n\n", turn.Response))
+	}
+
+	sb.WriteString("---\n\n")
+	sb.WriteString("## 현재 요청\n\n")
+	sb.WriteString(currentPrompt)
+
+	return sb.String()
 }

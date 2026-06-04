@@ -18,15 +18,23 @@ type Config struct {
 	ManagerAlways    bool   // default true (route every text via manager)
 }
 
+// ConversationTurn represents one exchange in a conversation.
+type ConversationTurn struct {
+	Timestamp time.Time `json:"timestamp"`
+	Prompt    string    `json:"prompt"`    // user input
+	Response  string    `json:"response"`  // claude output
+}
+
 // Conversation is one topic within a project; maps 1:1 to a claude session.
 // Design Ref: §3.1 — SessionID is a UUID we generate (--session-id first turn, --resume after).
 type Conversation struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	Summary      string    `json:"summary"`
-	SessionID    string    `json:"sessionId"` // UUID assigned at creation
-	Started      bool      `json:"started"`   // false until first worker turn completes
-	LastActivity time.Time `json:"lastActivity"`
+	ID           string              `json:"id"`
+	Title        string              `json:"title"`
+	Summary      string              `json:"summary"`
+	SessionID    string              `json:"sessionId"` // UUID assigned at creation
+	Started      bool                `json:"started"`   // false until first worker turn completes
+	LastActivity time.Time           `json:"lastActivity"`
+	History      []ConversationTurn  `json:"history"`   // conversation turns for context preservation
 }
 
 // Project is a registered directory holding multiple conversations.
