@@ -145,7 +145,7 @@ func TestManager_NoProjects_Guides(t *testing.T) {
 	m := NewManager(fc, st, &Config{ManagerAlways: true})
 	f := &fakeSender{}
 	m.Handle(context.Background(), 1, "hi", f)
-	if len(f.sent) != 1 || !contains(f.sent[0], "/project add") {
+	if len(f.sent) != 1 || !contains(f.sent[0], "!project add") {
 		t.Errorf("messages = %v", f.sent)
 	}
 }

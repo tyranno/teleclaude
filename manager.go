@@ -31,7 +31,7 @@ func NewManager(client ClaudeClient, store StoreRepo, cfg *Config) *Manager {
 func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s MessageSender) {
 	projects := m.store.ListProjects()
 	if len(projects) == 0 {
-		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n/project add <이름> <경로>")
+		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n!project add <이름> <경로>")
 		return
 	}
 
@@ -44,7 +44,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 				return
 			}
 		}
-		_ = s.Send(chatID, "🤔 어느 프로젝트/대화에서 할지 모르겠어요. /project list 로 확인하거나 /chat use <id> 로 지정해 주세요.")
+		_ = s.Send(chatID, "🤔 어느 프로젝트/대화에서 할지 모르겠어요. !project list 로 확인하거나 !chat use <id> 로 지정해 주세요.")
 		return
 	}
 
@@ -55,13 +55,13 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 	case ActionClarify:
 		msg := dec.Clarify
 		if msg == "" {
-			msg = "어느 대화를 말씀하시는지 알려주세요. /chat list 로 목록을 볼 수 있어요."
+			msg = "어느 대화를 말씀하시는지 알려주세요. !chat list 로 목록을 볼 수 있어요."
 		}
 		_ = s.Send(chatID, "🤔 "+msg)
 
 	case ActionNew:
 		if _, exists := m.store.GetProject(dec.Project); !exists {
-			_ = s.Send(chatID, "🤔 어느 프로젝트인지 분명하지 않아요. /project list 를 확인해 주세요.")
+			_ = s.Send(chatID, "🤔 어느 프로젝트인지 분명하지 않아요. !project list 를 확인해 주세요.")
 			return
 		}
 		c, err := m.store.NewConversation(dec.Project, dec.NewTitle)
@@ -74,13 +74,13 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 	case ActionResume:
 		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
 		if !exists {
-			_ = s.Send(chatID, "🤔 해당 대화를 찾지 못했어요. /chat list 로 확인해 주세요.")
+			_ = s.Send(chatID, "🤔 해당 대화를 찾지 못했어요. !chat list 로 확인해 주세요.")
 			return
 		}
 		m.runWorker(ctx, chatID, text, dec.Project, c, s)
 
 	default:
-		_ = s.Send(chatID, "🤔 라우팅 결과를 이해하지 못했어요. /chat use <id> 로 대화를 지정해 주세요.")
+		_ = s.Send(chatID, "🤔 라우팅 결과를 이해하지 못했어요. !chat use <id> 로 대화를 지정해 주세요.")
 	}
 }
 
