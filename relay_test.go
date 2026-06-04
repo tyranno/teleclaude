@@ -63,7 +63,7 @@ func TestRoutingHeader(t *testing.T) {
 type fakeSender struct{ sent []string }
 
 func (f *fakeSender) Send(_ int64, text string) error { f.sent = append(f.sent, text); return nil }
-func (f *fakeSender) Typing(_ int64)                   {}
+func (f *fakeSender) Typing(_ int64)                  {}
 
 func TestSendChunked_EmptyBecomesPlaceholder(t *testing.T) {
 	f := &fakeSender{}

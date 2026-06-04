@@ -41,6 +41,7 @@ const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"strin
 // isolationArgs keep each spawned claude lightweight and isolated:
 //   - --strict-mcp-config: ignore all global MCP servers (no serena/context7/figma/bkend boot)
 //   - --setting-sources project,local: skip USER-global settings (additional dirs, plugins, output-style)
+//
 // OAuth/keychain auth is unaffected (unlike --bare). Big cold-start + noise reduction.
 var isolationArgs = []string{"--strict-mcp-config", "--setting-sources", "project,local"}
 
