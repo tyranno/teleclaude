@@ -31,10 +31,26 @@ func main() {
 		if err := run(override); err != nil {
 			log.Fatalf("fatal: %v", err)
 		}
+	case "setup":
+		var override string
+		if len(args) > 1 {
+			override = args[1]
+		}
+		path := override
+		if path == "" {
+			p, e := defaultConfigPath()
+			if e != nil {
+				log.Fatal(e)
+			}
+			path = p
+		}
+		if err := RunSetup(path); err != nil {
+			log.Fatalf("설정 마법사 중단: %v", err)
+		}
 	case "version", "--version", "-v":
 		fmt.Println("teleclaude 0.1.0")
 	default:
-		fmt.Println("usage: teleclaude [run [config-path]] | version")
+		fmt.Println("usage: teleclaude [run [config-path]] | setup [config-path] | version")
 	}
 }
 
@@ -50,7 +66,18 @@ func run(configOverride string) error {
 
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
-		return fmt.Errorf("%w\n설정 파일 예시는 README를 참고하세요 (%s)", err, cfgPath)
+		// No (or incomplete) config → run the interactive wizard, then reload.
+		if !isInteractive() {
+			return fmt.Errorf("%w\n대화형 터미널에서 `teleclaude setup`을 먼저 실행하세요 (%s)", err, cfgPath)
+		}
+		fmt.Println("⚙️  설정이 없거나 불완전합니다. 설정 마법사를 시작합니다.")
+		if serr := RunSetup(cfgPath); serr != nil {
+			return fmt.Errorf("설정 마법사 중단: %w", serr)
+		}
+		cfg, err = LoadConfig(cfgPath)
+		if err != nil {
+			return err
+		}
 	}
 
 	claudePath, err := findClaude(cfg.ClaudePath)

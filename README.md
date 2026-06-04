@@ -12,36 +12,38 @@ PC에 설치된 `claude` CLI로 작업을 수행하고 결과를 받아보는 **
 
 ---
 
-## 1. 사전 준비
+## 1. 빠른 시작 (설정 마법사)
 
-1. **claude CLI 설치 및 로그인** (`claude --version`이 동작해야 함)
-2. **Telegram 봇 생성** — [@BotFather](https://t.me/BotFather) → `/newbot` → 토큰 발급
-   (username은 반드시 `bot`으로 끝나야 함). 기존 봇과 분리되도록 **새 봇 권장**.
-3. **내 user ID 확인** — [@userinfobot](https://t.me/userinfobot)에 아무 메시지나 전송
+**유일한 사전 전제**: `claude` 설치 + 로그인 (`claude --version` 동작).
 
-## 2. 설정 파일
-
-`%USERPROFILE%\.teleclaude\config.txt` 생성:
-
+```powershell
+go build -o teleclaude.exe .
+.\teleclaude.exe run          # 설정이 없으면 설정 마법사가 자동으로 시작됩니다
 ```
+
+처음 실행하면 마법사가 안내합니다 — **설정 파일을 손으로 만들 필요 없음**:
+1. **봇 토큰** 입력 (없으면: 텔레그램 [@BotFather](https://t.me/BotFather) → `/newbot` → 토큰 복사)
+2. **내 계정 연결** — 안내대로 봇에게 메시지 한 번 보내면 **user ID 자동 감지**
+3. **(선택) 첫 프로젝트 폴더** 등록 (나중에 `/project add` 가능)
+
+→ 끝나면 바로 봇이 켜집니다. 잊고 다시 켜도 실행이 곧 설정입니다.
+
+> 설정만 다시 잡기: `.\teleclaude.exe setup`
+
+<details>
+<summary>고급: 설정 파일 수동 작성</summary>
+
+`%USERPROFILE%\.teleclaude\config.txt`:
+```ini
 TELEGRAM_BOT_TOKEN=123456789:AAH...
 ALLOWED_USER_IDS=123456789
-# 선택 항목
 MANAGER_MODEL=haiku          # 라우팅용 경량 모델 (기본 haiku)
 WORKER_MODEL=                 # 작업용 모델 (비우면 claude 기본)
 CLAUDE_PATH=                  # 비우면 자동 탐지
 TIMEOUT_MINUTES=10           # 작업 타임아웃
-MANAGER_ALWAYS=true          # 매 메시지 라우팅(정확성 우선). false면 활성 대화 유지로 토큰 절약
+MANAGER_ALWAYS=true          # true=매 메시지 라우팅, false=활성 대화 유지로 토큰 절약
 ```
-
-## 3. 빌드 & 실행
-
-```powershell
-go build -o teleclaude.exe .
-.\teleclaude.exe run
-# 또는 다른 설정 파일 지정:
-.\teleclaude.exe run C:\path\to\config.txt
-```
+</details>
 
 ## 4. 사용법
 
