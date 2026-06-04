@@ -11,13 +11,19 @@ import (
 // Design Ref: §2.2, §4.1, §6.3 — routing orchestration, clarify, fallback. Application layer.
 
 type Manager struct {
-	client ClaudeClient
-	store  StoreRepo
-	cfg    *Config
+	client       ClaudeClient
+	store        StoreRepo
+	workerStatus WorkerStatusStore
+	cfg          *Config
 }
 
 func NewManager(client ClaudeClient, store StoreRepo, cfg *Config) *Manager {
-	return &Manager{client: client, store: store, cfg: cfg}
+	return &Manager{
+		client:       client,
+		store:        store,
+		workerStatus: NewMemoryWorkerStatusStore(),
+		cfg:          cfg,
+	}
 }
 
 // Handle routes a free-text message to the right project/conversation and runs the Worker.
@@ -175,6 +181,15 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	isNewConv := !workConv.Started
 	_ = s.Send(chatID, routingHeader(project, workConv.Title, isNewConv))
 
+	// Record Worker status as running
+	_ = m.workerStatus.SetStatus(WorkerStatus{
+		Project:        project,
+		ConversationID: workConv.ID,
+		Title:          workConv.Title,
+		Status:         "running",
+		StartTime:      time.Now(),
+	})
+
 	startTime := time.Now()
 	// Pass history only when there is no existing Claude session to resume.
 	// When Started=true, --resume already carries full session history; passing
@@ -195,9 +210,12 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 
 	if err != nil {
 		if ctx.Err() != nil {
-			return // cancelled/timed out — bot already notified
+			// Timeout or cancelled
+			_ = m.workerStatus.UpdateStatus(project, workConv.ID, "timeout", ctx.Err().Error())
+			return
 		}
 		_ = s.Send(chatID, "⚠️ 작업 실패: "+err.Error())
+		_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
 		return
 	}
 
@@ -224,6 +242,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		log.Printf("[manager] set active: %v", err)
 	}
 
+	// Update Worker status to completed
+	_ = m.workerStatus.UpdateStatus(project, workConv.ID, "completed", "")
+
 	// Send completion notification with elapsed time
 	completionMsg := formatCompletion(elapsed)
 	_ = s.Send(chatID, completionMsg)
@@ -239,6 +260,38 @@ func (m *Manager) describeActive() string {
 		return fmt.Sprintf("📂 %s · 💬 %s", a.Project, c.Title)
 	}
 	return "활성 대화 없음"
+}
+
+// GetWorkerStatus returns status of a specific Worker or empty if not found.
+func (m *Manager) GetWorkerStatus(project, convID string) (WorkerStatus, bool) {
+	return m.workerStatus.GetStatus(project, convID)
+}
+
+// DescribeActiveWorkers returns a human-readable status of all running Workers.
+func (m *Manager) DescribeActiveWorkers() string {
+	active := m.workerStatus.ListActive()
+	if len(active) == 0 {
+		return "실행 중인 작업 없음"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🔄 실행 중인 작업 (%d개):\n\n", len(active)))
+	for i, ws := range active {
+		elapsed := time.Since(ws.StartTime)
+		mins := int(elapsed.Minutes())
+		secs := int(elapsed.Seconds()) % 60
+
+		timeStr := ""
+		if mins > 0 {
+			timeStr = fmt.Sprintf("%d분 %d초", mins, secs)
+		} else {
+			timeStr = fmt.Sprintf("%d초", secs)
+		}
+
+		sb.WriteString(fmt.Sprintf("%d) 📂 %s · 💬 %s\n", i+1, ws.Project, ws.Title))
+		sb.WriteString(fmt.Sprintf("   ⏱️ %s 경과\n", timeStr))
+	}
+	return sb.String()
 }
 
 // formatCompletion formats the work completion notification with elapsed time.

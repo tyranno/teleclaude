@@ -118,6 +118,28 @@ type ClaudeClient interface {
 	Run(ctx context.Context, req RunRequest) (RunResult, error)
 }
 
+// --- Worker status tracking (real-time monitoring) ---
+
+// WorkerStatus tracks the state of a running or completed Worker task.
+type WorkerStatus struct {
+	Project        string    // project name
+	ConversationID string    // conversation ID
+	Title          string    // conversation title for display
+	Status         string    // "running" | "completed" | "failed" | "timeout"
+	StartTime      time.Time // when the worker started
+	EndTime        time.Time // when the worker finished (zero if still running)
+	Error          string    // error message if failed
+}
+
+// WorkerStatusStore tracks all active and recent Workers.
+type WorkerStatusStore interface {
+	GetStatus(project, convID string) (WorkerStatus, bool)
+	SetStatus(status WorkerStatus) error
+	ListActive() []WorkerStatus // return workers that are still running
+	ListRecent(limit int) []WorkerStatus // return last N completed workers
+	UpdateStatus(project, convID string, newStatus, errorMsg string) error
+}
+
 // StoreRepo abstracts the conversation store (JSON for MVP, SQLite later).
 type StoreRepo interface {
 	Load() error
