@@ -267,7 +267,7 @@ type StoreRepo interface {
 claude -p "<routing system prompt + 대화목록 + 사용자메시지>" \
        --model <ManagerModel> --output-format json --json-schema <RouteDecision schema>
 ```
-- `--json-schema`로 구조화 출력 강제 → 결과 envelope의 `.result`에서 `RouteDecision` 파싱(방어적: 첫 `{...}` 블록 추출 폴백).
+- `--json-schema`로 구조화 출력 강제. ⚠️ **실측(통합검증)**: 검증된 객체는 `.result`가 아니라 envelope의 별도 필드 **`structured_output`** 에 담긴다(`.result`엔 산문이 올 수 있음). 따라서 파싱 우선순위 = `structured_output` → `.result`(펜스/산문 폴백) → stdout 첫 `{...}`.
 - 파싱 실패/빈 결과 → 폴백(§6.3).
 - 라우팅 프롬프트 규칙: "반드시 등록된 프로젝트명 중에서만 선택. 모르면 action=clarify. 새 주제면 action=new + newTitle. 확실히 기존 대화 연속이면 action=resume + conversationId. JSON만 출력."
 

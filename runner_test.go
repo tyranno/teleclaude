@@ -54,6 +54,30 @@ func TestParseRouteDecision_NewWithProse(t *testing.T) {
 	}
 }
 
+func TestParseRouteDecision_StructuredOutput(t *testing.T) {
+	// Real claude --json-schema behavior: decision is in structured_output, not result.
+	out := `{"type":"result","result":"Done. Routing submitted.","structured_output":{"action":"resume","project":"myapp","confidence":0.95}}`
+	dec, err := parseRouteDecision(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Action != ActionResume || dec.Project != "myapp" {
+		t.Errorf("decision = %+v", dec)
+	}
+}
+
+func TestParseRouteDecision_StructuredOutputPreferredOverResult(t *testing.T) {
+	// structured_output must win even if result also contains a (stale) object.
+	out := `{"type":"result","result":"{\"action\":\"new\",\"project\":\"other\"}","structured_output":{"action":"clarify","clarify":"which?"}}`
+	dec, err := parseRouteDecision(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Action != ActionClarify {
+		t.Errorf("expected structured_output to win, got %+v", dec)
+	}
+}
+
 func TestParseRouteDecision_RawObject(t *testing.T) {
 	// Fallback: routing JSON appears directly (no envelope).
 	out := `{"action":"clarify","clarify":"어느 대화?"}`

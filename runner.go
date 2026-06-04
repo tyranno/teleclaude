@@ -26,12 +26,14 @@ func NewClaudeRunner(claudePath string, cfg *Config) *claudeRunner {
 }
 
 // claudeEnvelope is the `claude -p --output-format json` result object (fields we use).
+// With --json-schema, the validated object lands in StructuredOutput (NOT Result).
 type claudeEnvelope struct {
-	Type      string `json:"type"`
-	Subtype   string `json:"subtype"`
-	Result    string `json:"result"`
-	IsError   bool   `json:"is_error"`
-	SessionID string `json:"session_id"`
+	Type             string          `json:"type"`
+	Subtype          string          `json:"subtype"`
+	Result           string          `json:"result"`
+	IsError          bool            `json:"is_error"`
+	SessionID        string          `json:"session_id"`
+	StructuredOutput json.RawMessage `json:"structured_output"`
 }
 
 const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"}},"required":["action"]}`
@@ -113,15 +115,24 @@ func parseRunResult(stdout string) (RunResult, error) {
 }
 
 // parseRouteDecision extracts a RouteDecision from the manager's json output.
-// It tolerates the decision being in the envelope `.result` string or raw in stdout.
+// Order: (1) structured_output (--json-schema), (2) .result string, (3) raw stdout.
 func parseRouteDecision(stdout string) (RouteDecision, error) {
-	// 1) Try the standard envelope; the routing JSON lives in .result.
-	if env, err := decodeEnvelope(stdout); err == nil && env.Result != "" {
-		if dec, ok := unmarshalDecision(env.Result); ok {
-			return dec, nil
+	if env, err := decodeEnvelope(stdout); err == nil {
+		// 1) --json-schema places the validated object here.
+		if len(env.StructuredOutput) > 0 {
+			var dec RouteDecision
+			if json.Unmarshal(env.StructuredOutput, &dec) == nil && dec.Action != "" {
+				return dec, nil
+			}
+		}
+		// 2) Otherwise the decision may be in .result (possibly fenced/with prose).
+		if env.Result != "" {
+			if dec, ok := unmarshalDecision(env.Result); ok {
+				return dec, nil
+			}
 		}
 	}
-	// 2) Fall back: find the first JSON object anywhere in stdout.
+	// 3) Last resort: find the first JSON object anywhere in stdout.
 	if dec, ok := unmarshalDecision(stdout); ok {
 		return dec, nil
 	}

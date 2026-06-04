@@ -69,9 +69,15 @@ version_project: 0.1.0
 | SC-5 | 봇 1개로 여러 프로젝트 등록·사용 | ✅ Met | bot.go /project; store_test |
 | SC-6 | allowlist 외 차단, /cancel, 4096 분할 | ✅ Met | config IsAllowed, bot cancel→killTree, relay chunk + 테스트 |
 | SC-7 | 단위 테스트 작성·통과, README 작성 | ✅ Met | 35 PASS; README.md |
-| SC-8 | 실제 봇+claude 핵심 루프 (수동 통합) | ⏳ Pending | 봇 토큰 준비 후 수동 검증 (다음 단계) |
+| SC-8 | 실제 claude로 Worker/Manager 통합 검증 | ✅ Met (2026-06-04) | integration_test.go: Route/RunAndResume/NoStdinHang 통과. Telegram 폴링만 봇 토큰 대기 |
 
-**Success Rate**: 7/8 Met (88%), 1 Pending(수동 통합). 정적/단위 기준 DoD 충족.
+**Success Rate**: 8/8 Met (Telegram 폴링 실연결만 봇 토큰 대기). DoD 충족.
+
+> **Post-archive 통합 검증 (2026-06-04)**: 이 Windows의 실제 `claude` CLI로 `claudeRunner`를 직접 구동.
+> - ✅ Worker: `--session-id` 새 세션 → `--resume`로 "PONG" 맥락 기억 확인. envelope 필드(result/session_id/is_error) 일치.
+> - ✅ Manager: haiku 라우팅 정확(myapp/1/resume).
+> - 🐞 **버그 발견·수정**: `--json-schema` 사용 시 검증 객체가 `.result`가 아닌 **`structured_output`** 필드에 담김. `parseRouteDecision`가 이를 우선 읽도록 수정(+단위 테스트 2개). 통합 테스트가 잡아낸 실제 결함.
+> - ⏱ 관찰: `claude -p` 콜드스타트 ~11–21s/호출(메시지당 Manager+Worker 2회 → 지연·비용 고려. 후속: MANAGER_ALWAYS=false로 Manager 생략, 진행표시 강화).
 
 ## 1.5 Decision Record Summary
 
