@@ -76,19 +76,30 @@ go build -o teleclaude.exe .
 
 > 먼저 `/project add`로 프로젝트를 1개 이상 등록해야 자연어 라우팅이 동작합니다.
 
+> 📖 **자세한 설치·설정·트러블슈팅은 [docs/SETUP.md](docs/SETUP.md)** 를 보세요.
+
 ## 5. 동작 방식
 
 ```
-[Telegram] → bot(auth, 단일 작업) → Manager(claude --json-schema 라우팅)
+[Telegram] → bot(auth, 단일 작업) → Manager(claude --json-schema 라우팅, structured_output)
    → 대화 저장소(store.json: 프로젝트→대화→세션UUID)
    → Worker(claude -p --output-format json --session-id/--resume, cwd=프로젝트)
    → 결과를 4096자 분할 회신
 ```
 
+각 claude spawn은 **격리 실행**됩니다: `--strict-mcp-config`(글로벌 MCP 서버 무시 — serena 등 안 뜸) +
+`--setting-sources project,local`(전역 설정/추가 디렉토리 누수 차단). OAuth 인증은 유지(`--bare` 미사용).
+
 상태 파일: `%USERPROFILE%\.teleclaude\store.json`
 
-## 6. 한계 (MVP)
+## 6. 검증 상태 (2026-06-04, 실측)
+
+라우팅 / Worker 실행+resume / **로컬 파일 생성** / 격리(MCP off, 인증 유지) / **Telegram 폴링 왕복(폰↔봇)** 모두 실측 통과.
+단위·목 37개 + 통합 테스트(`go test -tags integration`) 통과. 자세한 표는 [docs/SETUP.md §11](docs/SETUP.md).
+
+## 7. 한계 (MVP)
 
 - 한 번에 한 작업만 처리(직렬화). 처리 중 새 메시지는 안내 후 무시 → `/cancel` 가능.
+- `claude -p` 콜드스타트 지연(호출당 십수 초). `MANAGER_ALWAYS=false`로 완화 가능.
 - Windows Service 상시화·Telegram 토픽 UX·로컬 머신 전반 제어는 후속 단계.
 - 실시간 토큰 스트리밍 아님(작업 단위 회신). 진행 중에는 typing 표시.

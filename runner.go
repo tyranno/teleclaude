@@ -38,10 +38,17 @@ type claudeEnvelope struct {
 
 const routeJSONSchema = `{"type":"object","properties":{"project":{"type":"string"},"conversationId":{"type":"string"},"action":{"type":"string","enum":["resume","new","clarify"]},"newTitle":{"type":"string"},"clarify":{"type":"string"},"confidence":{"type":"number"}},"required":["action"]}`
 
+// isolationArgs keep each spawned claude lightweight and isolated:
+//   - --strict-mcp-config: ignore all global MCP servers (no serena/context7/figma/bkend boot)
+//   - --setting-sources project,local: skip USER-global settings (additional dirs, plugins, output-style)
+// OAuth/keychain auth is unaffected (unlike --bare). Big cold-start + noise reduction.
+var isolationArgs = []string{"--strict-mcp-config", "--setting-sources", "project,local"}
+
 // Route asks the Manager model to decide routing. Runs in a neutral cwd with no tools/permissions.
 func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
 	prompt := buildRoutePrompt(req)
 	args := []string{"-p", prompt, "--output-format", "json", "--json-schema", routeJSONSchema}
+	args = append(args, isolationArgs...)
 	if r.cfg.ManagerModel != "" {
 		args = append(args, "--model", r.cfg.ManagerModel)
 	}
@@ -61,6 +68,7 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 // Run executes a Worker turn in the project directory and returns the final text.
 func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	args := []string{"-p", req.Prompt, "--output-format", "json", "--dangerously-skip-permissions"}
+	args = append(args, isolationArgs...)
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
