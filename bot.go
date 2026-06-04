@@ -14,8 +14,13 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-// Design Ref: §2.1, §4.3 — Telegram polling, auth, command dispatch, single-flight + /cancel.
+// Design Ref: §2.1, §4.3 — Telegram polling, auth, command dispatch, queue + /cancel.
 // Presentation layer; implements MessageSender for relay.
+
+type queuedMsg struct {
+	chatID int64
+	text   string
+}
 
 type Bot struct {
 	api     *tgbotapi.BotAPI
@@ -26,6 +31,7 @@ type Bot struct {
 	mu            sync.Mutex
 	busy          bool
 	cancelCurrent context.CancelFunc
+	queue         []queuedMsg // pending messages while busy
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager) *Bot {
@@ -78,12 +84,15 @@ func (b *Bot) Run() {
 	}
 }
 
-// dispatchText runs a free-text message through the Manager, one at a time.
+// dispatchText routes a free-text message through the Manager.
+// If a Worker is already running, the message is queued and processed in order.
 func (b *Bot) dispatchText(chatID int64, text string) {
 	b.mu.Lock()
 	if b.busy {
+		b.queue = append(b.queue, queuedMsg{chatID: chatID, text: text})
+		pos := len(b.queue)
 		b.mu.Unlock()
-		_ = b.Send(chatID, "⏳ 이전 작업을 처리 중입니다. !cancel 로 취소할 수 있어요.")
+		_ = b.Send(chatID, fmt.Sprintf("📋 대기열 추가 (%d번째) — 현재 작업이 끝나면 순서대로 처리됩니다. !cancel 로 현재 작업을 취소할 수 있어요.", pos))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(b.cfg.TimeoutMinutes)*time.Minute)
@@ -101,7 +110,18 @@ func (b *Bot) dispatchText(chatID int64, text string) {
 			b.mu.Lock()
 			b.busy = false
 			b.cancelCurrent = nil
+			var next *queuedMsg
+			if len(b.queue) > 0 {
+				n := b.queue[0]
+				next = &n
+				b.queue = b.queue[1:]
+			}
 			b.mu.Unlock()
+
+			if next != nil {
+				_ = b.Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
+				b.dispatchText(next.chatID, next.text)
+			}
 		}()
 
 		b.manager.Handle(ctx, chatID, text, b)
@@ -124,7 +144,14 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 	case "!cancel":
 		b.cancel(chatID)
 	case "!status":
-		_ = b.Send(chatID, b.manager.describeActive())
+		msg := b.manager.describeActive()
+		b.mu.Lock()
+		qLen := len(b.queue)
+		b.mu.Unlock()
+		if qLen > 0 {
+			msg += fmt.Sprintf("\n📋 대기 중: %d개", qLen)
+		}
+		_ = b.Send(chatID, msg)
 	case "!project":
 		b.handleProject(chatID, text, fields)
 	case "!chat":

@@ -18,6 +18,8 @@ PC에 설치된 `claude` CLI로 작업을 수행하고 결과를 받아보는 **
 
 ```powershell
 go build -o teleclaude.exe .
+.\launcher.ps1                # teleclaude.exe 실행 + 핫스왑 업데이트 지원
+# 또는 단순 실행:
 .\teleclaude.exe run          # 설정이 없으면 설정 마법사가 자동으로 시작됩니다
 ```
 
@@ -66,15 +68,16 @@ MANAGER_ALWAYS=true          # true=매 메시지 라우팅, false=활성 대화
 
 | 명령 | 설명 |
 |------|------|
-| `/project add <이름> <경로>` | 프로젝트 등록 (경로는 공백 포함 가능) |
-| `/project remove <이름>` | 프로젝트 제거 |
-| `/project list` | 프로젝트·대화 목록 (⭐=활성) |
-| `/chat new [제목]` | 활성 프로젝트에 새 대화 |
-| `/chat list` | 활성 프로젝트의 대화 목록 |
-| `/chat use <id>` | 대화 수동 전환 |
-| `/status` | 현재 활성 대화 |
-| `/cancel` | 진행 중 작업 취소 |
-| `/help` | 도움말 |
+| `!project add <이름> <경로>` | 프로젝트 등록 (경로는 공백 포함 가능) |
+| `!project remove <이름>` | 프로젝트 제거 |
+| `!project list` | 프로젝트·대화 목록 (⭐=활성) |
+| `!chat new [제목]` | 활성 프로젝트에 새 대화 |
+| `!chat list` | 활성 프로젝트의 대화 목록 |
+| `!chat use <id>` | 대화 수동 전환 |
+| `!status` | 현재 활성 대화 및 실행 중 작업 |
+| `!cancel` | 진행 중 작업 취소 |
+| `!update` | 새 버전 빌드 & 자동 재시작 (launcher.ps1 필요) |
+| `!help` | 도움말 |
 
 > 먼저 `/project add`로 프로젝트를 1개 이상 등록해야 자연어 라우팅이 동작합니다.
 
