@@ -29,6 +29,12 @@ func NewManager(client ClaudeClient, store StoreRepo, cfg *Config) *Manager {
 // Handle routes a free-text message to the right project/conversation and runs the Worker.
 // Plan SC: 자연어 → 정확 라우팅 → 해당 디렉토리 작업, 대화별 맥락 분리.
 func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s MessageSender) {
+	// Check for status queries first (e.g., "진행 중이야?", "살아있어?")
+	if IsStatusQuery(text) {
+		_ = s.Send(chatID, m.DescribeActiveWorkers())
+		return
+	}
+
 	projects := m.store.ListProjects()
 	if len(projects) == 0 {
 		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n/project add <이름> <경로>")
@@ -268,6 +274,7 @@ func (m *Manager) GetWorkerStatus(project, convID string) (WorkerStatus, bool) {
 }
 
 // DescribeActiveWorkers returns a human-readable status of all running Workers.
+// If hasETA is true, it also estimates remaining time (rough heuristic).
 func (m *Manager) DescribeActiveWorkers() string {
 	active := m.workerStatus.ListActive()
 	if len(active) == 0 {
@@ -281,17 +288,51 @@ func (m *Manager) DescribeActiveWorkers() string {
 		mins := int(elapsed.Minutes())
 		secs := int(elapsed.Seconds()) % 60
 
-		timeStr := ""
+		elapsedStr := ""
 		if mins > 0 {
-			timeStr = fmt.Sprintf("%d분 %d초", mins, secs)
+			elapsedStr = fmt.Sprintf("%d분 %d초", mins, secs)
 		} else {
-			timeStr = fmt.Sprintf("%d초", secs)
+			elapsedStr = fmt.Sprintf("%d초", secs)
 		}
 
 		sb.WriteString(fmt.Sprintf("%d) 📂 %s · 💬 %s\n", i+1, ws.Project, ws.Title))
-		sb.WriteString(fmt.Sprintf("   ⏱️ %s 경과\n", timeStr))
+		sb.WriteString(fmt.Sprintf("   ⏱️ %s 경과\n", elapsedStr))
+
+		// Rough ETA: if running < 30s, likely quick; if > 2min, likely long task
+		if mins > 2 {
+			estimatedTotal := time.Duration(mins*2) * time.Minute // rough guess: double the elapsed time
+			remaining := estimatedTotal - elapsed
+			if remaining > 0 {
+				remainMins := int(remaining.Minutes())
+				remainSecs := int(remaining.Seconds()) % 60
+				sb.WriteString(fmt.Sprintf("   ≈ %d분 %d초 남음 (예상)\n", remainMins, remainSecs))
+			}
+		}
 	}
 	return sb.String()
+}
+
+// IsStatusQuery detects if text is asking about Worker status.
+// Examples: "진행 중이야?", "살아있어?", "얼마나 남았어?", "상태 보여줘"
+func IsStatusQuery(text string) bool {
+	keywords := []string{
+		"진행", "살아", "상태", "실행", "남겼", "얼마나",
+		"어디까지", "어떻게", "진행률", "아직", "뭐하",
+	}
+
+	lowerText := strings.ToLower(text)
+	for _, kw := range keywords {
+		if strings.Contains(lowerText, kw) {
+			// Heuristic: status queries usually end with 야? or 나? or 요? or 어? or 줘
+			return strings.ContainsAny(lowerText, "?？") ||
+				strings.HasSuffix(lowerText, "야") ||
+				strings.HasSuffix(lowerText, "나") ||
+				strings.HasSuffix(lowerText, "요") ||
+				strings.HasSuffix(lowerText, "어") ||
+				strings.HasSuffix(lowerText, "줘")
+		}
+	}
+	return false
 }
 
 // formatCompletion formats the work completion notification with elapsed time.

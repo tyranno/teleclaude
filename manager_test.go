@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // fakeClaude is a programmable ClaudeClient for manager tests.
@@ -246,6 +247,70 @@ func TestEstimateTokens(t *testing.T) {
 				t.Errorf("estimateTokens(%q) = %d, check failed", tt.text, got)
 			}
 		})
+	}
+}
+
+func TestIsStatusQuery(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{"진행 중이야?", true},
+		{"살아있어?", true},
+		{"얼마나 남았어?", true},
+		{"상태 보여줘", true},
+		{"어디까지 진행했어?", true},
+		{"뭐하고 있어?", true},
+		{"아직 실행 중이야?", true},
+		{"로그인 버그 고쳐줘", false},
+		{"분석해", false},
+		{"도와줘", false},
+		{"진행 현황이 뭐야", true}, // contains "진행" + "뭐"(질문)
+	}
+
+	for _, tt := range tests {
+		got := IsStatusQuery(tt.text)
+		if got != tt.want {
+			t.Errorf("IsStatusQuery(%q) = %v, want %v", tt.text, got, tt.want)
+		}
+	}
+}
+
+func TestManager_StatusQuery_ReturnsActiveWorkers(t *testing.T) {
+	fc := &fakeClaude{runRes: RunResult{Text: "처리 중"}}
+	m, st, _ := mgrFixture(t, fc)
+
+	// Create conversation and mark as started
+	c, _ := st.NewConversation("myapp", "작업 중")
+	c.Started = true
+	_ = st.UpdateConversation("myapp", c)
+
+	// Manually record a running worker
+	_ = m.workerStatus.SetStatus(WorkerStatus{
+		Project:        "myapp",
+		ConversationID: c.ID,
+		Title:          "작업 중",
+		Status:         "running",
+		StartTime:      time.Now().Add(-30 * time.Second),
+	})
+
+	f := &fakeSender{}
+	// Send status query
+	m.Handle(context.Background(), 1, "진행 중이야?", f)
+
+	// Should return status, not route to worker
+	if fc.runCalls != 0 {
+		t.Errorf("should not call worker for status query, got %d calls", fc.runCalls)
+	}
+	if len(f.sent) == 0 {
+		t.Error("should send status response")
+	}
+	joined := ""
+	for _, s := range f.sent {
+		joined += s + "\n"
+	}
+	if !contains(joined, "실행 중인 작업") {
+		t.Errorf("should show active workers, got: %s", joined)
 	}
 }
 
