@@ -221,3 +221,19 @@ func sortedConvIDs(convs map[string]*Conversation) []string {
 	})
 	return ids
 }
+
+// GetParent returns the parent conversation in a chain (used for continuation context).
+func (s *fileStore) GetParent(project, convID string) (*Conversation, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.data.Projects[project]
+	if !ok {
+		return nil, false
+	}
+	c, ok := p.Conversations[convID]
+	if !ok || c.ParentID == "" {
+		return nil, false
+	}
+	parent, ok := p.Conversations[c.ParentID]
+	return parent, ok
+}

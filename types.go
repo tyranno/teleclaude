@@ -27,14 +27,18 @@ type ConversationTurn struct {
 
 // Conversation is one topic within a project; maps 1:1 to a claude session.
 // Design Ref: §3.1 — SessionID is a UUID we generate (--session-id first turn, --resume after).
+// ParentID chains conversations when context grows too large (auto-continuation).
 type Conversation struct {
-	ID           string              `json:"id"`
-	Title        string              `json:"title"`
-	Summary      string              `json:"summary"`
-	SessionID    string              `json:"sessionId"` // UUID assigned at creation
-	Started      bool                `json:"started"`   // false until first worker turn completes
-	LastActivity time.Time           `json:"lastActivity"`
-	History      []ConversationTurn  `json:"history"`   // conversation turns for context preservation
+	ID             string              `json:"id"`
+	Title          string              `json:"title"`
+	Summary        string              `json:"summary"`
+	SessionID      string              `json:"sessionId"` // UUID assigned at creation
+	Started        bool                `json:"started"`   // false until first worker turn completes
+	LastActivity   time.Time           `json:"lastActivity"`
+	History        []ConversationTurn  `json:"history"`   // conversation turns for context preservation
+	ParentID       string              `json:"parentId,omitempty"`     // ID of previous conversation in chain
+	ChildID        string              `json:"childId,omitempty"`      // ID of next conversation in chain
+	IsContinuation bool                `json:"isContinuation,omitempty"` // auto-generated continuation
 }
 
 // Project is a registered directory holding multiple conversations.
@@ -127,4 +131,5 @@ type StoreRepo interface {
 	UpdateConversation(project string, c *Conversation) error
 	SetActive(project, convID string) error
 	GetActive() ActiveRef
+	GetParent(project, convID string) (*Conversation, bool)
 }

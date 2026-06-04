@@ -149,6 +149,106 @@ func TestManager_NoProjects_Guides(t *testing.T) {
 	}
 }
 
+func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
+	// Create a conversation with large history to trigger auto-continuation
+	fc := &fakeClaude{runRes: RunResult{Text: "더 많은 작업 완료"}}
+	m, st, _ := mgrFixture(t, fc)
+
+	// Create initial conversation with large history
+	c, _ := st.NewConversation("myapp", "큰 프로젝트")
+	c.Started = true
+	c.Summary = "이전에 많은 작업을 했습니다"
+
+	// Add large history to trigger continuation (with actual characters to count tokens)
+	longPrompt := "여기는 매우 긴 프롬프트입니다. "
+	longResponse := "여기는 매우 긴 응답입니다. "
+	for i := 0; i < 5000; i++ { // ~70k tokens with multiplier
+		longPrompt += "긴 텍스트를 반복합니다. "
+		longResponse += "긴 응답을 반복합니다. "
+	}
+
+	largeTurn := ConversationTurn{
+		Prompt:   longPrompt,
+		Response: longResponse,
+	}
+	c.History = append(c.History, largeTurn)
+	_ = st.UpdateConversation("myapp", c)
+
+	// Verify token estimation exceeds threshold
+	estimatedTokens := estimateTokens(longPrompt) + estimateTokens(longResponse)
+	if estimatedTokens < 50000 {
+		t.Logf("Warning: estimated tokens %d < threshold 50000; test may not trigger continuation", estimatedTokens)
+	}
+
+	// Set this as active and resume with more input
+	_ = st.SetActive("myapp", c.ID)
+
+	fc.decision = RouteDecision{Action: ActionResume, Project: "myapp", ConversationID: c.ID}
+	f := &fakeSender{}
+	m.Handle(context.Background(), 1, "계속 작업해줘", f)
+
+	// Verify continuation was created
+	p, _ := st.GetProject("myapp")
+	if len(p.Conversations) != 2 {
+		t.Fatalf("expected 2 conversations (original + continuation), got %d", len(p.Conversations))
+	}
+
+	// Find the continuation conversation
+	var continuation *Conversation
+	for _, conv := range p.Conversations {
+		if conv.ParentID != "" && conv.IsContinuation {
+			continuation = conv
+			break
+		}
+	}
+	if continuation == nil {
+		t.Fatal("continuation conversation not found")
+	}
+
+	// Verify parent-child link
+	if continuation.ParentID != c.ID {
+		t.Errorf("continuation.ParentID = %q, want %q", continuation.ParentID, c.ID)
+	}
+	if c.ChildID != continuation.ID {
+		t.Errorf("original.ChildID not updated: %q, want %q", c.ChildID, continuation.ID)
+	}
+
+	// Verify the prompt includes parent summary
+	if !contains(fc.lastRun.Prompt, "이전에 많은 작업을 했습니다") {
+		t.Errorf("continuation prompt should include parent summary, got: %q", fc.lastRun.Prompt)
+	}
+
+	// Verify title includes series indicator
+	if !contains(continuation.Title, "시리즈") {
+		t.Errorf("continuation title should include series indicator: %q", continuation.Title)
+	}
+
+	// Verify active is set to continuation
+	if st.GetActive().ConversationID != continuation.ID {
+		t.Errorf("active should be continuation, got %q", st.GetActive().ConversationID)
+	}
+}
+
+func TestEstimateTokens(t *testing.T) {
+	tests := []struct {
+		text  string
+		name  string
+		check func(int) bool
+	}{
+		{"", "empty", func(n int) bool { return n == 0 }},
+		{"hello", "one-word", func(n int) bool { return n > 0 && n < 10 }},
+		{"hello world this is a test", "multi-word", func(n int) bool { return n >= 5 && n < 15 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := estimateTokens(tt.text)
+			if !tt.check(got) {
+				t.Errorf("estimateTokens(%q) = %d, check failed", tt.text, got)
+			}
+		})
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
 }

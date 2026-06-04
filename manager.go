@@ -109,6 +109,7 @@ func (m *Manager) buildRouteRequest(text string) RouteRequest {
 }
 
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.
+// If history grows too large, it auto-creates a continuation conversation.
 func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project string, c *Conversation, s MessageSender) {
 	p, ok := m.store.GetProject(project)
 	if !ok {
@@ -116,16 +117,57 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		return
 	}
 
+	// Check if context is growing too large; auto-create continuation if needed.
+	// Threshold: ~40k tokens (conservative estimate for claude-haiku).
+	const contextThreshold = 40000
+	parentSummary := ""
+	workConv := c
+
+	historyTokens := 0
+	for _, turn := range c.History {
+		historyTokens += estimateTokens(turn.Prompt)
+		historyTokens += estimateTokens(turn.Response)
+	}
+	currentTokens := estimateTokens(text)
+	totalTokens := historyTokens + currentTokens
+
+	if totalTokens > contextThreshold {
+		// Create continuation conversation with parent reference
+		newC, err := m.store.NewConversation(project, c.Title+" (시리즈 2)")
+		if err != nil {
+			log.Printf("[manager] auto-continuation failed: %v", err)
+			// Fall back: just use current conversation
+		} else {
+			// Link parent-child chain
+			newC.ParentID = c.ID
+			newC.IsContinuation = true
+			parentSummary = c.Summary
+			if parentSummary == "" {
+				parentSummary = "이전 대화 내용을 참고해 주세요."
+			}
+
+			// Update current conversation with child reference
+			c.ChildID = newC.ID
+			if err := m.store.UpdateConversation(project, c); err != nil {
+				log.Printf("[manager] update parent childID: %v", err)
+			}
+
+			workConv = newC
+			_ = s.Send(chatID, "📝 대화가 길어져서 새 시리즈를 시작합니다...")
+		}
+	}
+
 	s.Typing(chatID)
-	_ = s.Send(chatID, routingHeader(project, c.Title, !c.Started))
+	isNewConv := !workConv.Started
+	_ = s.Send(chatID, routingHeader(project, workConv.Title, isNewConv))
 
 	startTime := time.Now()
-	prompt := buildContextPrompt(text, c.History)
+	prompt := buildContextPrompt(text, parentSummary, workConv.History)
 	res, err := m.client.Run(ctx, RunRequest{
 		Prompt:    prompt,
 		WorkDir:   p.Path,
-		SessionID: c.SessionID,
-		Resume:    c.Started,
+		SessionID: workConv.SessionID,
+		Resume:    workConv.Started,
 		Model:     m.cfg.WorkerModel,
 	})
 	elapsed := time.Since(startTime)
@@ -141,23 +183,23 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	_ = sendChunked(s, chatID, res.Text)
 
 	// Persist conversation progress and history.
-	c.Started = true
-	c.LastActivity = time.Now().UTC()
+	workConv.Started = true
+	workConv.LastActivity = time.Now().UTC()
 	if res.Text != "" {
-		c.Summary = truncate(res.Text, 80)
+		workConv.Summary = truncate(res.Text, 80)
 	}
 
 	// Append this turn to conversation history for context preservation
-	c.History = append(c.History, ConversationTurn{
+	workConv.History = append(workConv.History, ConversationTurn{
 		Timestamp: time.Now().UTC(),
 		Prompt:    text,
 		Response:  res.Text,
 	})
 
-	if err := m.store.UpdateConversation(project, c); err != nil {
+	if err := m.store.UpdateConversation(project, workConv); err != nil {
 		log.Printf("[manager] update conversation: %v", err)
 	}
-	if err := m.store.SetActive(project, c.ID); err != nil {
+	if err := m.store.SetActive(project, workConv.ID); err != nil {
 		log.Printf("[manager] set active: %v", err)
 	}
 
@@ -195,21 +237,26 @@ func formatCompletion(elapsed time.Duration) string {
 }
 
 // buildContextPrompt prepends conversation history to the current prompt for context continuity.
-func buildContextPrompt(currentPrompt string, history []ConversationTurn) string {
-	if len(history) == 0 {
-		return currentPrompt
-	}
-
+// If parentSummary is provided, it's included first (for continuation conversations).
+func buildContextPrompt(currentPrompt, parentSummary string, history []ConversationTurn) string {
 	var sb strings.Builder
-	sb.WriteString("## 이전 대화 기록\n\n")
 
-	for i, turn := range history {
-		sb.WriteString(fmt.Sprintf("**Turn %d** (%s)\n", i+1, turn.Timestamp.Format("2006-01-02 15:04")))
-		sb.WriteString(fmt.Sprintf("**요청:** %s\n", turn.Prompt))
-		sb.WriteString(fmt.Sprintf("**응답:** %s\n\n", turn.Response))
+	if parentSummary != "" {
+		sb.WriteString("## 이전 대화 요약\n\n")
+		sb.WriteString(parentSummary)
+		sb.WriteString("\n\n---\n\n")
 	}
 
-	sb.WriteString("---\n\n")
+	if len(history) > 0 {
+		sb.WriteString("## 현재 대화 기록\n\n")
+		for i, turn := range history {
+			sb.WriteString(fmt.Sprintf("**Turn %d** (%s)\n", i+1, turn.Timestamp.Format("2006-01-02 15:04")))
+			sb.WriteString(fmt.Sprintf("**요청:** %s\n", turn.Prompt))
+			sb.WriteString(fmt.Sprintf("**응답:** %s\n\n", turn.Response))
+		}
+		sb.WriteString("---\n\n")
+	}
+
 	sb.WriteString("## 현재 요청\n\n")
 	sb.WriteString(currentPrompt)
 
