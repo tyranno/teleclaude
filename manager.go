@@ -118,6 +118,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	s.Typing(chatID)
 	_ = s.Send(chatID, routingHeader(project, c.Title, !c.Started))
 
+	startTime := time.Now()
 	res, err := m.client.Run(ctx, RunRequest{
 		Prompt:    text,
 		WorkDir:   p.Path,
@@ -125,6 +126,8 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		Resume:    c.Started,
 		Model:     m.cfg.WorkerModel,
 	})
+	elapsed := time.Since(startTime)
+
 	if err != nil {
 		if ctx.Err() != nil {
 			return // cancelled/timed out — bot already notified
@@ -147,9 +150,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	if err := m.store.SetActive(project, c.ID); err != nil {
 		log.Printf("[manager] set active: %v", err)
 	}
+
+	// Send completion notification with elapsed time
+	completionMsg := formatCompletion(elapsed)
+	_ = s.Send(chatID, completionMsg)
 }
 
-// describeActive returns a human-readable active pointer (used by /status-like replies).
+// describeActive returns a human-readable active pointer (used by !status-like replies).
 func (m *Manager) describeActive() string {
 	a := m.store.GetActive()
 	if a.Project == "" {
@@ -159,4 +166,20 @@ func (m *Manager) describeActive() string {
 		return fmt.Sprintf("📂 %s · 💬 %s", a.Project, c.Title)
 	}
 	return "활성 대화 없음"
+}
+
+// formatCompletion formats the work completion notification with elapsed time.
+func formatCompletion(elapsed time.Duration) string {
+	secs := int(elapsed.Seconds())
+	mins := secs / 60
+	secs = secs % 60
+
+	var duration string
+	if mins > 0 {
+		duration = fmt.Sprintf("%d분 %d초", mins, secs)
+	} else {
+		duration = fmt.Sprintf("%d초", secs)
+	}
+
+	return fmt.Sprintf("✅ 작업 완료 (%s)", duration)
 }
