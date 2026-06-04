@@ -132,8 +132,22 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	totalTokens := historyTokens + currentTokens
 
 	if totalTokens > contextThreshold {
+		// Compute series number and base title by walking to the chain root.
+		baseTitle := c.Title
+		seriesNum := 2
+		cur := c
+		for cur.ParentID != "" {
+			parent, ok := m.store.GetParent(project, cur.ID)
+			if !ok {
+				break
+			}
+			baseTitle = parent.Title
+			seriesNum++
+			cur = parent
+		}
+
 		// Create continuation conversation with parent reference
-		newC, err := m.store.NewConversation(project, c.Title+" (시리즈 2)")
+		newC, err := m.store.NewConversation(project, fmt.Sprintf("%s (시리즈 %d)", baseTitle, seriesNum))
 		if err != nil {
 			log.Printf("[manager] auto-continuation failed: %v", err)
 			// Fall back: just use current conversation
@@ -162,7 +176,14 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	_ = s.Send(chatID, routingHeader(project, workConv.Title, isNewConv))
 
 	startTime := time.Now()
-	prompt := buildContextPrompt(text, parentSummary, workConv.History)
+	// Pass history only when there is no existing Claude session to resume.
+	// When Started=true, --resume already carries full session history; passing
+	// it again via prompt would double the context and skew the threshold check.
+	var historyForPrompt []ConversationTurn
+	if !workConv.Started {
+		historyForPrompt = workConv.History
+	}
+	prompt := buildContextPrompt(text, parentSummary, historyForPrompt)
 	res, err := m.client.Run(ctx, RunRequest{
 		Prompt:    prompt,
 		WorkDir:   p.Path,
