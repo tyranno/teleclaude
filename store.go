@@ -208,6 +208,18 @@ func (s *fileStore) GetActive() ActiveRef {
 	return s.data.Active
 }
 
+// sortedConvIDsByActivity returns IDs sorted by LastActivity descending (most recent first).
+func sortedConvIDsByActivity(convs map[string]*Conversation) []string {
+	ids := make([]string, 0, len(convs))
+	for k := range convs {
+		ids = append(ids, k)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return convs[ids[i]].LastActivity.After(convs[ids[j]].LastActivity)
+	})
+	return ids
+}
+
 // sortedConvIDs returns conversation IDs in numeric order (helper for listings).
 func sortedConvIDs(convs map[string]*Conversation) []string {
 	ids := make([]string, 0, len(convs))

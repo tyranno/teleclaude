@@ -104,17 +104,63 @@ func (m *Manager) decide(ctx context.Context, text string) (RouteDecision, bool)
 }
 
 func (m *Manager) buildRouteRequest(text string) RouteRequest {
+	const maxConvsPerProject = 10 // keep routing prompt lean
 	projects := m.store.ListProjects()
 	summaries := make([]ProjectSummary, 0, len(projects))
 	for name, p := range projects {
-		convs := make([]ConversationSummary, 0, len(p.Conversations))
-		for _, id := range sortedConvIDs(p.Conversations) {
+		ids := sortedConvIDsByActivity(p.Conversations)
+		if len(ids) > maxConvsPerProject {
+			ids = ids[:maxConvsPerProject]
+		}
+		convs := make([]ConversationSummary, 0, len(ids))
+		for _, id := range ids {
 			c := p.Conversations[id]
 			convs = append(convs, ConversationSummary{ID: c.ID, Title: c.Title, Summary: c.Summary})
 		}
 		summaries = append(summaries, ProjectSummary{Name: name, Conversations: convs})
 	}
 	return RouteRequest{Message: text, Projects: summaries, Active: m.store.GetActive()}
+}
+
+// chainInfo walks to the chain root and returns the base title and next series number.
+func (m *Manager) chainInfo(project string, c *Conversation) (string, int) {
+	baseTitle := c.Title
+	seriesNum := 2
+	cur := c
+	for cur.ParentID != "" {
+		parent, ok := m.store.GetParent(project, cur.ID)
+		if !ok {
+			break
+		}
+		baseTitle = parent.Title
+		seriesNum++
+		cur = parent
+	}
+	return baseTitle, seriesNum
+}
+
+// makeContinuation creates a new continuation conversation linked to parent.
+func (m *Manager) makeContinuation(project string, parent *Conversation) (*Conversation, error) {
+	baseTitle, seriesNum := m.chainInfo(project, parent)
+	newC, err := m.store.NewConversation(project, fmt.Sprintf("%s (시리즈 %d)", baseTitle, seriesNum))
+	if err != nil {
+		return nil, err
+	}
+	newC.ParentID = parent.ID
+	newC.IsContinuation = true
+	parent.ChildID = newC.ID
+	if uerr := m.store.UpdateConversation(project, parent); uerr != nil {
+		log.Printf("[manager] update parent childID: %v", uerr)
+	}
+	return newC, nil
+}
+
+// isContextOverflow detects Claude CLI "Prompt is too long" context limit errors.
+func isContextOverflow(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "prompt is too long") ||
+		strings.Contains(lower, "context length exceeded") ||
+		strings.Contains(lower, "context window")
 }
 
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.
@@ -141,40 +187,14 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	totalTokens := historyTokens + currentTokens
 
 	if totalTokens > contextThreshold {
-		// Compute series number and base title by walking to the chain root.
-		baseTitle := c.Title
-		seriesNum := 2
-		cur := c
-		for cur.ParentID != "" {
-			parent, ok := m.store.GetParent(project, cur.ID)
-			if !ok {
-				break
-			}
-			baseTitle = parent.Title
-			seriesNum++
-			cur = parent
+		summary := c.Summary
+		if summary == "" {
+			summary = "이전 대화 내용을 참고해 주세요."
 		}
-
-		// Create continuation conversation with parent reference
-		newC, err := m.store.NewConversation(project, fmt.Sprintf("%s (시리즈 %d)", baseTitle, seriesNum))
-		if err != nil {
+		if newC, err := m.makeContinuation(project, c); err != nil {
 			log.Printf("[manager] auto-continuation failed: %v", err)
-			// Fall back: just use current conversation
 		} else {
-			// Link parent-child chain
-			newC.ParentID = c.ID
-			newC.IsContinuation = true
-			parentSummary = c.Summary
-			if parentSummary == "" {
-				parentSummary = "이전 대화 내용을 참고해 주세요."
-			}
-
-			// Update current conversation with child reference
-			c.ChildID = newC.ID
-			if err := m.store.UpdateConversation(project, c); err != nil {
-				log.Printf("[manager] update parent childID: %v", err)
-			}
-
+			parentSummary = summary
 			workConv = newC
 			_ = s.Send(chatID, "📝 대화가 길어져서 새 시리즈를 시작합니다...")
 		}
@@ -220,6 +240,34 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		_ = s.Send(chatID, "⚠️ 작업 실패: "+err.Error())
 		_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
 		return
+	}
+
+	// Reactive: if Worker hit Claude's context limit, auto-create continuation and retry once.
+	if res.IsError && isContextOverflow(res.Text) {
+		overflowSummary := workConv.Summary
+		if overflowSummary == "" {
+			overflowSummary = "이전 대화 내용을 참고해 주세요."
+		}
+		if newC, cerr := m.makeContinuation(project, workConv); cerr == nil {
+			workConv = newC
+			_ = s.Send(chatID, "📝 세션 한계에 도달해 새 시리즈로 재시작합니다...")
+			retryPrompt := buildContextPrompt(text, overflowSummary, nil)
+			res, err = m.client.Run(ctx, RunRequest{
+				Prompt:    retryPrompt,
+				WorkDir:   p.Path,
+				SessionID: workConv.SessionID,
+				Resume:    false,
+				Model:     m.cfg.WorkerModel,
+			})
+			elapsed = time.Since(startTime)
+			if err != nil {
+				_ = s.Send(chatID, "⚠️ 재시작 후 작업 실패: "+err.Error())
+				_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
+				return
+			}
+		} else {
+			log.Printf("[manager] reactive continuation failed: %v", cerr)
+		}
 	}
 
 	_ = sendChunked(s, chatID, res.Text)
