@@ -24,11 +24,16 @@ func main() {
 
 	switch cmd {
 	case "run":
-		var override string
-		if len(args) > 1 {
-			override = args[1]
+		var configPath, handoffFile string
+		for i := 1; i < len(args); i++ {
+			if args[i] == "--handoff-ready" && i+1 < len(args) {
+				handoffFile = args[i+1]
+				i++
+			} else {
+				configPath = args[i]
+			}
 		}
-		if err := run(override); err != nil {
+		if err := run(configPath, handoffFile); err != nil {
 			log.Fatalf("fatal: %v", err)
 		}
 	case "setup":
@@ -54,7 +59,25 @@ func main() {
 	}
 }
 
-func run(configOverride string) error {
+// selfRename renames the running exe to teleclaude.exe (used after handoff).
+// Windows allows renaming a running executable; retries until old process releases the name.
+func selfRename() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	target := filepath.Join(filepath.Dir(exe), "teleclaude.exe")
+	for i := 0; i < 10; i++ {
+		time.Sleep(time.Second)
+		if err := os.Rename(exe, target); err == nil {
+			log.Printf("[main] self-renamed to teleclaude.exe")
+			return
+		}
+	}
+	log.Printf("[main] self-rename skipped")
+}
+
+func run(configOverride, handoffReadyFile string) error {
 	cfgPath := configOverride
 	if cfgPath == "" {
 		p, err := defaultConfigPath()
@@ -106,6 +129,16 @@ func run(configOverride string) error {
 		return fmt.Errorf("텔레그램 봇 초기화 실패: %w", err)
 	}
 	log.Printf("[main] allowlist: %v, manager=%s, worker=%q", cfg.AllowedUserIDs, cfg.ManagerModel, cfg.WorkerModel)
+
+	// Handoff mode: signal old process we're connected, then rename ourselves.
+	if handoffReadyFile != "" {
+		if werr := os.WriteFile(handoffReadyFile, []byte("ready"), 0600); werr != nil {
+			log.Printf("[main] handoff signal failed: %v", werr)
+		} else {
+			log.Printf("[main] handoff: signaled ready (file=%s)", handoffReadyFile)
+		}
+		go selfRename()
+	}
 
 	bot := NewBot(api, cfg, store, manager)
 	bot.Run() // blocks

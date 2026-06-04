@@ -310,8 +310,9 @@ func (b *Bot) formatChatList(project string) string {
 	return sb.String()
 }
 
-// handleUpdate builds teleclaude_new.exe and exits with code 42 so launcher.ps1
-// can atomically swap the binary and restart without manual intervention.
+// handleUpdate builds teleclaude_new.exe, starts it, waits for it to connect to
+// Telegram, then hands over: old process exits cleanly, new process renames itself.
+// Works without launcher.ps1 — zero downtime.
 func (b *Bot) handleUpdate(chatID int64) {
 	_ = b.Send(chatID, "🔨 빌드 시작...")
 
@@ -322,21 +323,43 @@ func (b *Bot) handleUpdate(chatID int64) {
 	}
 	srcDir := filepath.Dir(exe)
 	newExe := filepath.Join(srcDir, "teleclaude_new.exe")
+	readyFile := filepath.Join(os.TempDir(), fmt.Sprintf(".teleclaude_ready_%d", os.Getpid()))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", newExe, ".")
-	cmd.Dir = srcDir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+	// Build
+	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer buildCancel()
+	buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", newExe, ".")
+	buildCmd.Dir = srcDir
+	if out, berr := buildCmd.CombinedOutput(); berr != nil {
 		_ = b.Send(chatID, "⚠️ 빌드 실패:\n"+strings.TrimSpace(string(out)))
 		return
 	}
 
-	_ = b.Send(chatID, "✅ 빌드 성공! launcher.ps1이 교체 후 재시작합니다.")
-	log.Println("[bot] update: exiting with code 42 for launcher hot-swap")
-	os.Exit(42)
+	_ = b.Send(chatID, "✅ 빌드 성공! 새 버전 연결 중...")
+	_ = os.Remove(readyFile)
+
+	// Start new process — it will write readyFile once Telegram API connects
+	newProc := exec.Command(newExe, "run", "--handoff-ready", readyFile)
+	if err := newProc.Start(); err != nil {
+		_ = b.Send(chatID, "⚠️ 새 버전 시작 실패: "+err.Error())
+		return
+	}
+
+	// Wait up to 30s for new process to signal Telegram connection
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(500 * time.Millisecond)
+		if _, serr := os.Stat(readyFile); serr == nil {
+			_ = os.Remove(readyFile)
+			_ = b.Send(chatID, "🔄 새 버전 연결됨! 전환합니다...")
+			log.Println("[bot] handoff: new instance ready, exiting")
+			os.Exit(0)
+		}
+	}
+
+	// Timeout — kill new process, keep current running
+	_ = newProc.Process.Kill()
+	_ = b.Send(chatID, "⚠️ 새 버전 연결 대기 시간 초과 (30초). 이전 버전 계속 사용합니다.")
 }
 
 func helpText() string {
