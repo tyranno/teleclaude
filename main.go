@@ -26,16 +26,24 @@ func main() {
 
 	switch cmd {
 	case "run":
-		var configPath, handoffFile string
+		var configPath, handoffFile, notifyChat string
 		for i := 1; i < len(args); i++ {
-			if args[i] == "--handoff-ready" && i+1 < len(args) {
-				handoffFile = args[i+1]
-				i++
-			} else {
+			switch args[i] {
+			case "--handoff-ready":
+				if i+1 < len(args) {
+					handoffFile = args[i+1]
+					i++
+				}
+			case "--notify-chat":
+				if i+1 < len(args) {
+					notifyChat = args[i+1]
+					i++
+				}
+			default:
 				configPath = args[i]
 			}
 		}
-		if err := run(configPath, handoffFile); err != nil {
+		if err := run(configPath, handoffFile, notifyChat); err != nil {
 			log.Fatalf("fatal: %v", err)
 		}
 	case "setup":
@@ -94,7 +102,7 @@ func selfRename() {
 	log.Printf("[main] self-rename skipped")
 }
 
-func run(configOverride, handoffReadyFile string) error {
+func run(configOverride, handoffReadyFile, notifyChat string) error {
 	cfgPath := configOverride
 	if cfgPath == "" {
 		p, err := defaultConfigPath()
@@ -167,14 +175,22 @@ func run(configOverride, handoffReadyFile string) error {
 	manager.SetScheduler(sched)
 	go sched.Run()
 
-	// Handoff mode: signal old process AFTER polling starts (not just after getMe).
-	// This ensures the new process is actually receiving updates before the old one exits.
+	// Handoff mode: signal old process AFTER polling starts (GetUpdatesChan).
+	// This ensures no polling gap between old exit and new start.
+	// Also sends a Telegram notification so user knows handoff succeeded.
 	if handoffReadyFile != "" {
+		var notifyChatID int64
+		if notifyChat != "" {
+			notifyChatID, _ = strconv.ParseInt(notifyChat, 10, 64)
+		}
 		bot.onReady = func() {
 			if werr := os.WriteFile(handoffReadyFile, []byte("ready"), 0600); werr != nil {
 				log.Printf("[main] handoff signal failed: %v", werr)
 			} else {
 				log.Printf("[main] handoff: signaled ready — polling active")
+			}
+			if notifyChatID != 0 {
+				_ = bot.Send(notifyChatID, "✅ 새 버전 활성화됨! (백그라운드 실행 중)")
 			}
 			go selfRename()
 		}

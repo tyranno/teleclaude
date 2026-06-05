@@ -28,7 +28,7 @@ type Bot struct {
 	store     StoreRepo
 	manager   *Manager
 	scheduler *Scheduler
-	onReady   func() // called once polling starts (used for handoff signalling)
+	onReady   func() // called once after GetUpdatesChan starts (handoff signal)
 
 	mu            sync.Mutex
 	busy          bool
@@ -64,7 +64,7 @@ func (b *Bot) Run() {
 	updates := b.api.GetUpdatesChan(u)
 	log.Printf("[bot] @%s online, long-polling started", b.api.Self.UserName)
 	if b.onReady != nil {
-		b.onReady() // signal after polling starts, not just after getMe
+		b.onReady() // fire after polling starts — used by handoff to signal old process
 	}
 
 	for update := range updates {
@@ -360,8 +360,11 @@ func (b *Bot) handleUpdate(chatID int64) {
 	_ = b.Send(chatID, "✅ 빌드 성공! 새 버전 연결 중...")
 	_ = os.Remove(readyFile)
 
-	// Start new process — it will write readyFile once Telegram API connects
-	newProc := exec.Command(newExe, "run", "--handoff-ready", readyFile)
+	// Start new process — passes readyFile + chatID so it can signal and notify via Telegram
+	newProc := exec.Command(newExe, "run",
+		"--handoff-ready", readyFile,
+		"--notify-chat", fmt.Sprintf("%d", chatID),
+	)
 	if err := newProc.Start(); err != nil {
 		_ = b.Send(chatID, "⚠️ 새 버전 시작 실패: "+err.Error())
 		return
