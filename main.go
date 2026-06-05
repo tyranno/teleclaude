@@ -69,44 +69,36 @@ func main() {
 	}
 }
 
-// killCompetingInstances terminates other teleclaude.exe AND teleclaude_new.exe processes (not self).
-// teleclaude_new.exe must also be killed because it may be polling Telegram from a previous !update.
-// Only called on normal startup, not during handoff (where old process self-exits via ready signal).
-func killCompetingInstances() {
-	selfPID := strconv.Itoa(os.Getpid())
-	killed := false
-	for _, name := range []string{"teleclaude.exe", "teleclaude_new.exe"} {
-		out, err := exec.Command("taskkill", "/F",
-			"/FI", "IMAGENAME eq "+name,
-			"/FI", "PID ne "+selfPID,
-		).CombinedOutput()
-		msg := strings.TrimSpace(string(out))
-		if err == nil && !strings.Contains(strings.ToLower(msg), "no tasks") {
-			log.Printf("[main] terminated competing instance(s): %s", name)
-			killed = true
-		}
-	}
-	if killed {
-		time.Sleep(1500 * time.Millisecond) // Telegram needs ~1s to release the polling session
-	}
+// pidFilePath returns the path to the PID file (~/.teleclaude/teleclaude.pid).
+func pidFilePath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".teleclaude", "teleclaude.pid")
 }
 
-// selfRename renames the running exe to teleclaude.exe (used after handoff).
-// Windows allows renaming a running executable; retries until old process releases the name.
-func selfRename() {
-	exe, err := os.Executable()
+// writePIDFile records the current process PID so the next instance can kill it cleanly.
+func writePIDFile() {
+	_ = os.WriteFile(pidFilePath(), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
+}
+
+// killPreviousInstance reads the PID file and kills the recorded process.
+// Works regardless of the exe name (teleclaude.exe or teleclaude_new.exe after rename).
+func killPreviousInstance() {
+	b, err := os.ReadFile(pidFilePath())
 	if err != nil {
 		return
 	}
-	target := filepath.Join(filepath.Dir(exe), "teleclaude.exe")
-	for i := 0; i < 10; i++ {
-		time.Sleep(time.Second)
-		if err := os.Rename(exe, target); err == nil {
-			log.Printf("[main] self-renamed to teleclaude.exe")
-			return
-		}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 || pid == os.Getpid() {
+		return
 	}
-	log.Printf("[main] self-rename skipped")
+	// Safety check: verify the PID belongs to a teleclaude process.
+	check, _ := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV").CombinedOutput()
+	if !strings.Contains(strings.ToLower(string(check)), "teleclaude") {
+		return
+	}
+	exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
+	log.Printf("[main] killed previous instance (PID %d)", pid)
+	time.Sleep(1500 * time.Millisecond) // let Telegram release the polling session
 }
 
 func run(configOverride, handoffReadyFile, notifyChat string) error {
@@ -119,10 +111,10 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		cfgPath = p
 	}
 
-	// In normal startup (not handoff), terminate any competing instance first.
-	// In handoff mode the old process exits via ready-signal, so we skip this.
+	// Normal startup: kill the previous instance (identified by PID file).
+	// Handoff mode: old process exits via ready-signal — no need to kill here.
 	if handoffReadyFile == "" {
-		killCompetingInstances()
+		killPreviousInstance()
 	}
 
 	cfg, err := LoadConfig(cfgPath)
@@ -185,21 +177,24 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	// Handoff mode: signal old process AFTER polling starts (GetUpdatesChan).
 	// This ensures no polling gap between old exit and new start.
 	// Also sends a Telegram notification so user knows handoff succeeded.
-	if handoffReadyFile != "" {
-		var notifyChatID int64
-		if notifyChat != "" {
-			notifyChatID, _ = strconv.ParseInt(notifyChat, 10, 64)
-		}
-		bot.onReady = func() {
+	// onReady fires after GetUpdatesChan — polling is active at this point.
+	// Write PID file so the NEXT instance can kill us cleanly.
+	// In handoff mode: also signal the old process and notify via Telegram.
+	var notifyChatID int64
+	if notifyChat != "" {
+		notifyChatID, _ = strconv.ParseInt(notifyChat, 10, 64)
+	}
+	bot.onReady = func() {
+		writePIDFile() // record our PID for the next startup
+		if handoffReadyFile != "" {
 			if werr := os.WriteFile(handoffReadyFile, []byte("ready"), 0600); werr != nil {
 				log.Printf("[main] handoff signal failed: %v", werr)
 			} else {
-				log.Printf("[main] handoff: signaled ready — polling active")
+				log.Printf("[main] handoff: signaled ready — polling active, PID %d", os.Getpid())
 			}
 			if notifyChatID != 0 {
-				_ = bot.Send(notifyChatID, "✅ 새 버전 활성화됨! (백그라운드 실행 중)")
+				_ = bot.Send(notifyChatID, fmt.Sprintf("✅ 새 버전 활성화됨! (PID %d)", os.Getpid()))
 			}
-			go selfRename()
 		}
 	}
 
