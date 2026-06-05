@@ -28,6 +28,7 @@ type Bot struct {
 	store     StoreRepo
 	manager   *Manager
 	scheduler *Scheduler
+	onReady   func() // called once polling starts (used for handoff signalling)
 
 	mu            sync.Mutex
 	busy          bool
@@ -62,6 +63,9 @@ func (b *Bot) Run() {
 	u.Timeout = 30
 	updates := b.api.GetUpdatesChan(u)
 	log.Printf("[bot] @%s online, long-polling started", b.api.Self.UserName)
+	if b.onReady != nil {
+		b.onReady() // signal after polling starts, not just after getMe
+	}
 
 	for update := range updates {
 		if update.Message == nil || update.Message.From == nil {
@@ -158,6 +162,13 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 	case "!chat":
 		b.handleChat(chatID, text, fields)
 	case "!update":
+		b.mu.Lock()
+		busy := b.busy
+		b.mu.Unlock()
+		if busy {
+			_ = b.Send(chatID, "⏳ 작업 중에는 업데이트할 수 없습니다. !cancel 후 다시 시도하세요.")
+			return
+		}
 		b.handleUpdate(chatID)
 	case "!remind":
 		b.handleRemind(chatID, text, fields)
@@ -329,6 +340,12 @@ func (b *Bot) handleUpdate(chatID int64) {
 	srcDir := filepath.Dir(exe)
 	newExe := filepath.Join(srcDir, "teleclaude_new.exe")
 	readyFile := filepath.Join(os.TempDir(), fmt.Sprintf(".teleclaude_ready_%d", os.Getpid()))
+
+	// Verify source code exists in srcDir (fix: exe copied to different dir would silently fail)
+	if _, serr := os.Stat(filepath.Join(srcDir, "main.go")); serr != nil {
+		_ = b.Send(chatID, "⚠️ 소스 코드를 찾을 수 없습니다 ("+srcDir+")\nexe와 소스 코드가 같은 디렉터리에 있어야 !update가 작동합니다.")
+		return
+	}
 
 	// Build
 	buildCtx, buildCancel := context.WithTimeout(context.Background(), 5*time.Minute)

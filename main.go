@@ -144,14 +144,17 @@ func run(configOverride, handoffReadyFile string) error {
 	manager.SetScheduler(sched)
 	go sched.Run()
 
-	// Handoff mode: signal old process we're connected, then rename ourselves.
+	// Handoff mode: signal old process AFTER polling starts (not just after getMe).
+	// This ensures the new process is actually receiving updates before the old one exits.
 	if handoffReadyFile != "" {
-		if werr := os.WriteFile(handoffReadyFile, []byte("ready"), 0600); werr != nil {
-			log.Printf("[main] handoff signal failed: %v", werr)
-		} else {
-			log.Printf("[main] handoff: signaled ready (file=%s)", handoffReadyFile)
+		bot.onReady = func() {
+			if werr := os.WriteFile(handoffReadyFile, []byte("ready"), 0600); werr != nil {
+				log.Printf("[main] handoff signal failed: %v", werr)
+			} else {
+				log.Printf("[main] handoff: signaled ready — polling active")
+			}
+			go selfRename()
 		}
-		go selfRename()
 	}
 
 	bot.Run() // blocks
