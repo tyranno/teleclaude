@@ -7,6 +7,15 @@ Set-Location $dir
 
 Write-Host "[launcher] teleclaude 시작 ($dir)"
 
+# 기존에 실행 중인 다른 teleclaude 인스턴스 정리
+$existing = Get-Process teleclaude -ErrorAction SilentlyContinue |
+    Where-Object { $_.Id -ne $PID }
+if ($existing) {
+    Write-Host "[launcher] 기존 인스턴스 종료 중... ($($existing.Count)개)"
+    $existing | Stop-Process -Force
+    Start-Sleep -Milliseconds 800
+}
+
 while ($true) {
     & ".\teleclaude.exe"
     $code = $LASTEXITCODE

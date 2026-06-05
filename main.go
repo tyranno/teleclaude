@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -59,6 +61,21 @@ func main() {
 	}
 }
 
+// killCompetingInstances terminates other teleclaude.exe processes (not self).
+// Only called on normal startup, not during handoff (where old process self-exits via ready signal).
+func killCompetingInstances() {
+	selfPID := strconv.Itoa(os.Getpid())
+	out, err := exec.Command("taskkill", "/F",
+		"/FI", "IMAGENAME eq teleclaude.exe",
+		"/FI", "PID ne "+selfPID,
+	).CombinedOutput()
+	msg := strings.TrimSpace(string(out))
+	if err == nil && !strings.Contains(strings.ToLower(msg), "no tasks") {
+		log.Printf("[main] terminated competing teleclaude instance(s)")
+		time.Sleep(600 * time.Millisecond) // let Telegram polling clear before we start ours
+	}
+}
+
 // selfRename renames the running exe to teleclaude.exe (used after handoff).
 // Windows allows renaming a running executable; retries until old process releases the name.
 func selfRename() {
@@ -85,6 +102,12 @@ func run(configOverride, handoffReadyFile string) error {
 			return err
 		}
 		cfgPath = p
+	}
+
+	// In normal startup (not handoff), terminate any competing instance first.
+	// In handoff mode the old process exits via ready-signal, so we skip this.
+	if handoffReadyFile == "" {
+		killCompetingInstances()
 	}
 
 	cfg, err := LoadConfig(cfgPath)
