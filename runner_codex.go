@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -77,13 +79,103 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string) (stdo
 }
 
 // Route asks Codex to classify the user message and return a routing decision.
-// Stub — full implementation in Task 4.
 func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
-	return RouteDecision{}, fmt.Errorf("codex Route: not yet implemented")
+	// Write route schema to a temp file (codex requires a file path, not inline JSON).
+	schemaFile := filepath.Join(os.TempDir(), fmt.Sprintf("teleclaude_route_schema_%d.json", os.Getpid()))
+	if err := os.WriteFile(schemaFile, []byte(routeJSONSchema), 0600); err != nil {
+		return RouteDecision{}, fmt.Errorf("codex route schema 임시 파일 생성 실패: %w", err)
+	}
+	defer os.Remove(schemaFile)
+
+	outFile := filepath.Join(os.TempDir(), fmt.Sprintf("teleclaude_route_out_%d.txt", os.Getpid()))
+	defer os.Remove(outFile)
+
+	prompt := buildRoutePrompt(req)
+	args := []string{
+		"exec",
+		"--ignore-user-config",
+		"--skip-git-repo-check",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--ephemeral",
+		"--output-schema", schemaFile,
+		"--json",
+		"-o", outFile,
+		"-m", codexDefaultModel(r.cfg),
+		prompt,
+	}
+
+	home, _ := os.UserHomeDir()
+	_, stderr, err := r.exec(ctx, home, args)
+	if err != nil {
+		return RouteDecision{}, fmt.Errorf("codex manager 호출 실패: %w (%s)", err, strings.TrimSpace(stderr))
+	}
+
+	content, rerr := os.ReadFile(outFile)
+	if rerr != nil {
+		return RouteDecision{}, fmt.Errorf("codex route 결과 파일 읽기 실패: %w", rerr)
+	}
+	return parseCodexRouteDecision(string(content))
 }
 
 // Run executes a worker turn via codex exec.
-// Stub — full implementation in Task 4.
 func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
-	return RunResult{}, fmt.Errorf("codex Run: not yet implemented")
+	outFile := filepath.Join(os.TempDir(), fmt.Sprintf("teleclaude_codex_%d_%s.txt", os.Getpid(), req.SessionID))
+	defer os.Remove(outFile)
+
+	model := req.Model
+	if model == "" {
+		model = codexDefaultModel(r.cfg)
+	}
+
+	var args []string
+	if req.Resume && req.SessionID != "" {
+		args = []string{
+			"exec", "resume", req.SessionID,
+			"--dangerously-bypass-approvals-and-sandbox",
+			"--ignore-user-config",
+			"--skip-git-repo-check",
+			"--json",
+			"-o", outFile,
+			"-m", model,
+			req.Prompt,
+		}
+	} else {
+		args = []string{
+			"exec",
+			"-C", req.WorkDir,
+			"--dangerously-bypass-approvals-and-sandbox",
+			"--ignore-user-config",
+			"--skip-git-repo-check",
+			"--json",
+			"-o", outFile,
+			"-m", model,
+			req.Prompt,
+		}
+	}
+
+	stdout, stderr, err := r.exec(ctx, req.WorkDir, args)
+	if err != nil {
+		if ctx.Err() != nil {
+			return RunResult{}, ctx.Err()
+		}
+		// Read output file even on non-zero exit — codex may still produce output.
+		if content, rerr := os.ReadFile(outFile); rerr == nil && len(content) > 0 {
+			return RunResult{Text: parseCodexOutput(string(content))}, nil
+		}
+		return RunResult{}, fmt.Errorf("codex worker 실행 실패: %w (%s)", err, strings.TrimSpace(stderr))
+	}
+
+	// Extract thread_id for new sessions so the store can persist it.
+	threadID := extractThreadID(stdout)
+
+	content, rerr := os.ReadFile(outFile)
+	if rerr != nil {
+		return RunResult{}, fmt.Errorf("codex 결과 파일 읽기 실패: %w", rerr)
+	}
+
+	result := RunResult{Text: parseCodexOutput(string(content))}
+	if !req.Resume && threadID != "" {
+		result.SessionID = threadID
+	}
+	return result, nil
 }
