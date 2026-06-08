@@ -81,13 +81,23 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string) (stdo
 // Route asks Codex to classify the user message and return a routing decision.
 func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
 	// Write route schema to a temp file (codex requires a file path, not inline JSON).
-	schemaFile := filepath.Join(os.TempDir(), fmt.Sprintf("teleclaude_route_schema_%d.json", os.Getpid()))
-	if err := os.WriteFile(schemaFile, []byte(routeJSONSchema), 0600); err != nil {
+	sf, err := os.CreateTemp("", "teleclaude_route_schema_*.json")
+	if err != nil {
 		return RouteDecision{}, fmt.Errorf("codex route schema 임시 파일 생성 실패: %w", err)
 	}
+	schemaFile := sf.Name()
+	sf.Close()
 	defer os.Remove(schemaFile)
+	if err := os.WriteFile(schemaFile, []byte(routeJSONSchema), 0600); err != nil {
+		return RouteDecision{}, fmt.Errorf("codex route schema 쓰기 실패: %w", err)
+	}
 
-	outFile := filepath.Join(os.TempDir(), fmt.Sprintf("teleclaude_route_out_%d.txt", os.Getpid()))
+	of, err := os.CreateTemp("", "teleclaude_route_out_*.txt")
+	if err != nil {
+		return RouteDecision{}, fmt.Errorf("codex route 출력 임시 파일 생성 실패: %w", err)
+	}
+	outFile := of.Name()
+	of.Close()
 	defer os.Remove(outFile)
 
 	prompt := buildRoutePrompt(req)
