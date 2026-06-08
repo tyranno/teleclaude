@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,7 +177,11 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 	}
 
 	// Extract thread_id for new sessions so the store can persist it.
+	// If empty, codex changed its JSONL event format — resume will fall back to UUID-based attempt.
 	threadID := extractThreadID(stdout)
+	if !req.Resume && threadID == "" {
+		log.Printf("[codex] warning: thread_id not found in JSONL output; session resume may not work")
+	}
 
 	content, rerr := os.ReadFile(outFile)
 	if rerr != nil {
