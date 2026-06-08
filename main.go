@@ -201,7 +201,14 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	}
 
 	runner := NewClaudeRunner(claudePath, cfg)
-	manager := NewManager(runner, store, cfg)
+	var codexRunner ClaudeClient
+	if codexPath, err := findCodex(cfg.CodexPath); err == nil {
+		codexRunner = NewCodexRunner(codexPath, cfg)
+		log.Printf("[main] codex: %s", codexPath)
+	} else {
+		log.Printf("[main] codex not available: %v", err)
+	}
+	manager := NewManager(runner, codexRunner, store, cfg)
 
 	api, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
 	if err != nil {

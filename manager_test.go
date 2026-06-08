@@ -38,7 +38,7 @@ func mgrFixture(t *testing.T, fc *fakeClaude) (*Manager, *fileStore, string) {
 		t.Fatal(err)
 	}
 	cfg := &Config{ManagerAlways: true}
-	return NewManager(fc, st, cfg), st, dir
+	return NewManager(fc, nil, st, cfg), st, dir
 }
 
 func TestManager_New_CreatesConversationAndRuns(t *testing.T) {
@@ -142,7 +142,7 @@ func TestManager_NoProjects_Guides(t *testing.T) {
 	fc := &fakeClaude{}
 	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
 	_ = st.Load()
-	m := NewManager(fc, st, &Config{ManagerAlways: true})
+	m := NewManager(fc, nil, st, &Config{ManagerAlways: true})
 	f := &fakeSender{}
 	m.Handle(context.Background(), 1, "hi", f)
 	if len(f.sent) != 1 || !contains(f.sent[0], "!project add") {

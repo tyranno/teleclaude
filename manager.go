@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,15 +15,23 @@ import (
 
 type Manager struct {
 	client       ClaudeClient
+	backendName  string       // "claude" | "codex"
+	backendMu    sync.RWMutex
+	claudeClient ClaudeClient // preserved for switching back to claude
+	codexClient  ClaudeClient // nil if codex not available
+
 	store        StoreRepo
 	workerStatus WorkerStatusStore
 	scheduler    *Scheduler
 	cfg          *Config
 }
 
-func NewManager(client ClaudeClient, store StoreRepo, cfg *Config) *Manager {
+func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfg *Config) *Manager {
 	return &Manager{
-		client:       client,
+		client:       claude,
+		backendName:  "claude",
+		claudeClient: claude,
+		codexClient:  codex,
 		store:        store,
 		workerStatus: NewMemoryWorkerStatusStore(),
 		cfg:          cfg,
@@ -31,9 +40,45 @@ func NewManager(client ClaudeClient, store StoreRepo, cfg *Config) *Manager {
 
 func (m *Manager) SetScheduler(s *Scheduler) { m.scheduler = s }
 
+// SetBackend switches the active AI backend. Returns error if the requested backend is unavailable.
+func (m *Manager) SetBackend(name string) error {
+	m.backendMu.Lock()
+	defer m.backendMu.Unlock()
+	switch name {
+	case "claude":
+		m.client = m.claudeClient
+		m.backendName = "claude"
+	case "codex":
+		if m.codexClient == nil {
+			return fmt.Errorf("Codex가 설치되어 있지 않습니다")
+		}
+		m.client = m.codexClient
+		m.backendName = "codex"
+	default:
+		return fmt.Errorf("알 수 없는 백엔드: %s (claude | codex)", name)
+	}
+	return nil
+}
+
+// Backend returns the current backend name.
+func (m *Manager) Backend() string {
+	m.backendMu.RLock()
+	defer m.backendMu.RUnlock()
+	return m.backendName
+}
+
+// CodexAvailable reports whether codex is registered.
+func (m *Manager) CodexAvailable() bool {
+	return m.codexClient != nil
+}
+
 // Handle routes a free-text message to the right project/conversation and runs the Worker.
 // Plan SC: 자연어 → 정확 라우팅 → 해당 디렉토리 작업, 대화별 맥락 분리.
 func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s MessageSender) {
+	m.backendMu.RLock()
+	currentBackend := m.backendName
+	m.backendMu.RUnlock()
+
 	projects := m.store.ListProjects()
 	if len(projects) == 0 {
 		_ = s.Send(chatID, "등록된 프로젝트가 없습니다. 먼저 등록하세요:\n!project add <이름> <경로>")
@@ -77,12 +122,31 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 			_ = s.Send(chatID, "⚠️ 새 대화 생성 실패: "+err.Error())
 			return
 		}
+		c.Backend = currentBackend
+		_ = m.store.UpdateConversation(dec.Project, c)
 		m.runWorker(ctx, chatID, text, dec.Project, c, s)
 
 	case ActionResume:
 		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
 		if !exists {
-			_ = s.Send(chatID, "🤔 해당 대화를 찾지 못했어요. !chat list 로 확인해 주세요.")
+			_ = s.Send(chatID, "⚠️ 대화를 찾을 수 없습니다.")
+			return
+		}
+		convBackend := c.Backend
+		if convBackend == "" {
+			convBackend = "claude"
+		}
+		if convBackend != currentBackend {
+			_ = s.Send(chatID, fmt.Sprintf("⚠️ 백엔드 변경으로 새 대화를 시작합니다. [%s]", strings.ToUpper(currentBackend)))
+			newConv, cerr := m.store.NewConversation(dec.Project, "새 대화 ("+currentBackend+")")
+			if cerr != nil {
+				_ = s.Send(chatID, "⚠️ 새 대화 생성 실패: "+cerr.Error())
+				return
+			}
+			newConv.Backend = currentBackend
+			_ = m.store.UpdateConversation(dec.Project, newConv)
+			_ = m.store.SetActive(dec.Project, newConv.ID)
+			m.runWorker(ctx, chatID, text, dec.Project, newConv, s)
 			return
 		}
 		m.runWorker(ctx, chatID, text, dec.Project, c, s)
@@ -202,6 +266,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 		if newC, err := m.makeContinuation(project, c); err != nil {
 			log.Printf("[manager] auto-continuation failed: %v", err)
 		} else {
+			newC.Backend = m.Backend()
 			parentSummary = summary
 			workConv = newC
 			_ = s.Send(chatID, "📝 대화가 길어져서 새 시리즈를 시작합니다...")
@@ -276,6 +341,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 			overflowSummary = "이전 대화 내용을 참고해 주세요."
 		}
 		if newC, cerr := m.makeContinuation(project, workConv); cerr == nil {
+			newC.Backend = m.Backend()
 			workConv = newC
 			_ = s.Send(chatID, "📝 세션 한계에 도달해 새 시리즈로 재시작합니다...")
 			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, nil)
@@ -300,6 +366,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	_ = sendChunked(s, chatID, res.Text)
 
 	// Persist conversation progress and history.
+	wasStarted := workConv.Started
 	workConv.Started = true
 	workConv.LastActivity = time.Now().UTC()
 	if res.Text != "" {
@@ -317,6 +384,9 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	})
 	if len(workConv.History) > maxHistoryTurns {
 		workConv.History = workConv.History[len(workConv.History)-maxHistoryTurns:]
+	}
+	if res.SessionID != "" && !wasStarted {
+		workConv.SessionID = res.SessionID
 	}
 
 	if err := m.store.UpdateConversation(project, workConv); err != nil {
