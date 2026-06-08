@@ -102,6 +102,10 @@ func applyConfigKV(cfg *Config, key, val string) error {
 		}
 	case "MANAGER_ALWAYS":
 		cfg.ManagerAlways = parseBool(val, true)
+	case "CODEX_PATH":
+		cfg.CodexPath = val
+	case "CODEX_MODEL":
+		cfg.CodexModel = val
 	}
 	return nil
 }
@@ -173,4 +177,20 @@ func findClaude(explicit string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("claude CLI를 찾을 수 없습니다. PATH에 추가하거나 CLAUDE_PATH를 설정하세요")
+}
+
+// findCodex returns the codex CLI path (explicit override or PATH lookup).
+// Returns ("", nil) if not installed — codex is optional.
+func findCodex(explicit string) (string, error) {
+	if explicit != "" {
+		if _, err := os.Stat(explicit); err != nil {
+			return "", fmt.Errorf("codex 경로 없음: %s", explicit)
+		}
+		return explicit, nil
+	}
+	p, err := exec.LookPath("codex")
+	if err != nil {
+		return "", nil // not installed — not an error
+	}
+	return p, nil
 }

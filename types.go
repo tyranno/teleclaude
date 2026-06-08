@@ -16,6 +16,8 @@ type Config struct {
 	ClaudePath       string // "" = auto-detect
 	TimeoutMinutes   int    // default 10
 	ManagerAlways    bool   // default true (route every text via manager)
+	CodexPath        string // "" = auto-detect
+	CodexModel       string // "" = "o4-mini"
 }
 
 // ConversationTurn represents one exchange in a conversation.
@@ -39,6 +41,7 @@ type Conversation struct {
 	ParentID       string              `json:"parentId,omitempty"`     // ID of previous conversation in chain
 	ChildID        string              `json:"childId,omitempty"`      // ID of next conversation in chain
 	IsContinuation bool                `json:"isContinuation,omitempty"` // auto-generated continuation
+	Backend        string              `json:"backend,omitempty"`      // "claude"|"codex"|"" (""=claude)
 }
 
 // Project is a registered directory holding multiple conversations.
@@ -114,8 +117,9 @@ type RunRequest struct {
 }
 
 type RunResult struct {
-	Text    string
-	IsError bool
+	Text      string
+	IsError   bool
+	SessionID string // non-empty only on first codex turn (thread_id from JSONL)
 }
 
 // --- Interfaces (Design §4.1, Option C boundaries) ---
