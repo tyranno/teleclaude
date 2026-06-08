@@ -24,12 +24,9 @@ func NewCodexRunner(codexPath string, cfg *Config) *codexRunner {
 	return &codexRunner{codexPath: codexPath, cfg: cfg}
 }
 
-// codexDefaultModel returns the configured model or the default "o4-mini".
+// codexDefaultModel returns the configured model, or "" to let codex use its own default.
 func codexDefaultModel(cfg *Config) string {
-	if cfg.CodexModel != "" {
-		return cfg.CodexModel
-	}
-	return "o4-mini"
+	return cfg.CodexModel
 }
 
 // extractThreadID scans JSONL lines for the thread_id from a thread.started event.
@@ -80,19 +77,10 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string) (stdo
 }
 
 // Route asks Codex to classify the user message and return a routing decision.
+// Uses plain text output (no --output-schema) because OpenAI structured output requires
+// additionalProperties:false on all nested schemas, which would need schema duplication.
+// parseCodexRouteDecision handles JSON extraction from free-form text.
 func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecision, error) {
-	// Write route schema to a temp file (codex requires a file path, not inline JSON).
-	sf, err := os.CreateTemp("", "teleclaude_route_schema_*.json")
-	if err != nil {
-		return RouteDecision{}, fmt.Errorf("codex route schema 임시 파일 생성 실패: %w", err)
-	}
-	schemaFile := sf.Name()
-	sf.Close()
-	defer os.Remove(schemaFile)
-	if err := os.WriteFile(schemaFile, []byte(routeJSONSchema), 0600); err != nil {
-		return RouteDecision{}, fmt.Errorf("codex route schema 쓰기 실패: %w", err)
-	}
-
 	of, err := os.CreateTemp("", "teleclaude_route_out_*.txt")
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("codex route 출력 임시 파일 생성 실패: %w", err)
@@ -107,12 +95,13 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 		"--skip-git-repo-check",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--ephemeral",
-		"--output-schema", schemaFile,
 		"--json",
 		"-o", outFile,
-		"-m", codexDefaultModel(r.cfg),
-		prompt,
 	}
+	if m := codexDefaultModel(r.cfg); m != "" {
+		args = append(args, "-m", m)
+	}
+	args = append(args, prompt)
 
 	home, _ := os.UserHomeDir()
 	_, stderr, err := r.exec(ctx, home, args)
@@ -145,8 +134,6 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 			"--skip-git-repo-check",
 			"--json",
 			"-o", outFile,
-			"-m", model,
-			req.Prompt,
 		}
 	} else {
 		args = []string{
@@ -156,10 +143,12 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 			"--skip-git-repo-check",
 			"--json",
 			"-o", outFile,
-			"-m", model,
-			req.Prompt,
 		}
 	}
+	if model != "" {
+		args = append(args, "-m", model)
+	}
+	args = append(args, req.Prompt)
 
 	stdout, stderr, err := r.exec(ctx, req.WorkDir, args)
 	if err != nil {
