@@ -298,3 +298,47 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestSetBackend_Switch(t *testing.T) {
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	claude := &fakeClaude{}
+	codex := &fakeClaude{}
+	m := NewManager(claude, codex, st, &Config{ManagerAlways: true})
+
+	if m.Backend() != "claude" {
+		t.Fatal("default backend should be claude")
+	}
+
+	if err := m.SetBackend("codex"); err != nil {
+		t.Fatal(err)
+	}
+	if m.Backend() != "codex" {
+		t.Error("expected codex after switch")
+	}
+
+	if err := m.SetBackend("claude"); err != nil {
+		t.Fatal(err)
+	}
+	if m.Backend() != "claude" {
+		t.Error("expected claude after switch back")
+	}
+}
+
+func TestSetBackend_CodexUnavailable(t *testing.T) {
+	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
+	if err := st.Load(); err != nil {
+		t.Fatal(err)
+	}
+	claude := &fakeClaude{}
+	m := NewManager(claude, nil, st, &Config{ManagerAlways: true})
+
+	if err := m.SetBackend("codex"); err == nil {
+		t.Error("expected error when codex not available")
+	}
+	if m.Backend() != "claude" {
+		t.Error("backend should remain claude after failed switch")
+	}
+}
