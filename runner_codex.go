@@ -104,7 +104,6 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 	prompt := buildRoutePrompt(req)
 	args := []string{
 		"exec",
-		"--ignore-user-config",
 		"--skip-git-repo-check",
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--ephemeral",
@@ -143,7 +142,6 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 		args = []string{
 			"exec", "resume", req.SessionID,
 			"--dangerously-bypass-approvals-and-sandbox",
-			"--ignore-user-config",
 			"--skip-git-repo-check",
 			"--json",
 			"-o", outFile,
@@ -155,7 +153,6 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 			"exec",
 			"-C", req.WorkDir,
 			"--dangerously-bypass-approvals-and-sandbox",
-			"--ignore-user-config",
 			"--skip-git-repo-check",
 			"--json",
 			"-o", outFile,
