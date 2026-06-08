@@ -174,6 +174,8 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		b.handleRemind(chatID, text, fields)
 	case "!cron":
 		b.handleCron(chatID, text, fields)
+	case "!backend":
+		b.handleBackend(chatID, fields)
 	default:
 		_ = b.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
 	}
@@ -537,6 +539,41 @@ func (b *Bot) handleCron(chatID int64, text string, fields []string) {
 	}
 }
 
+// handleBackend handles !backend — displays or switches the active AI backend.
+func (b *Bot) handleBackend(chatID int64, fields []string) {
+	if len(fields) < 2 {
+		_ = b.Send(chatID, "현재 백엔드: "+strings.ToUpper(b.manager.Backend()))
+		return
+	}
+	target := strings.ToLower(fields[1])
+	switch target {
+	case "claude", "codex":
+	default:
+		_ = b.Send(chatID, "사용법: !backend [claude|codex]")
+		return
+	}
+
+	b.mu.Lock()
+	busy := b.busy
+	b.mu.Unlock()
+	if busy {
+		_ = b.Send(chatID, "⏳ 작업 중에는 백엔드를 전환할 수 없습니다. !cancel 후 다시 시도하세요.")
+		return
+	}
+
+	current := b.manager.Backend()
+	if current == target {
+		_ = b.Send(chatID, "이미 "+strings.ToUpper(target)+" 백엔드입니다.")
+		return
+	}
+
+	if err := b.manager.SetBackend(target); err != nil {
+		_ = b.Send(chatID, "⚠️ "+err.Error())
+		return
+	}
+	_ = b.Send(chatID, fmt.Sprintf("✅ 백엔드 전환됨: %s → %s", strings.ToUpper(current), strings.ToUpper(target)))
+}
+
 func helpText() string {
 	return strings.TrimSpace(`
 🤖 teleclaude — 폰에서 PC의 Claude를 자연어로 쓰세요.
@@ -557,6 +594,7 @@ func helpText() string {
 !remind list / cancel <id>   알림 목록 / 취소
 !cron add <주기> <내용>      반복 알림/작업 (예: !cron add hourly 서버 체크)
 !cron list / remove <id>     크론 목록 / 제거
+!backend [claude|codex]      AI 백엔드 전환 (현재 상태 확인 또는 전환)
 !update                      새 버전 빌드 & 자동 재시작
 !help                        이 도움말
 
