@@ -185,6 +185,8 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		b.handleRemind(chatID, text, fields)
 	case "!cron":
 		b.handleCron(chatID, text, fields)
+	case "!history":
+		b.handleHistory(chatID, fields)
 	case "!backend":
 		b.handleBackend(chatID, fields)
 	default:
@@ -985,6 +987,72 @@ func extFromMIME(mime string) string {
 	default:
 		return ".bin"
 	}
+}
+
+// handleHistory processes !history commands — date-based conversation log viewer.
+//
+//	!history                          — today's log for active project
+//	!history list [project]           — list available dates
+//	!history <YYYY-MM-DD>             — specific date, active project
+//	!history <project>                — today's log for named project
+//	!history <project> <YYYY-MM-DD>   — specific project + date
+func (b *Bot) handleHistory(chatID int64, fields []string) {
+	active := b.manager.store.GetActive()
+	defaultProject := active.Project
+
+	if len(fields) >= 2 && fields[1] == "list" {
+		project := defaultProject
+		if len(fields) >= 3 {
+			project = fields[2]
+		}
+		if project == "" {
+			_ = b.Send(chatID, "활성 프로젝트가 없습니다. !history list <프로젝트명> 형식으로 사용하세요.")
+			return
+		}
+		dates, err := ListHistoryDates(project)
+		if err != nil {
+			_ = b.Send(chatID, "⚠️ 히스토리 목록 조회 실패: "+err.Error())
+			return
+		}
+		if len(dates) == 0 {
+			_ = b.Send(chatID, "📅 "+project+": 기록된 날짜 없음")
+			return
+		}
+		_ = b.Send(chatID, "📅 "+project+" 히스토리 날짜:\n"+strings.Join(dates, "\n"))
+		return
+	}
+
+	// Parse: !history [project] [YYYY-MM-DD]
+	project := defaultProject
+	date := time.Now().Format("2006-01-02")
+	for _, arg := range fields[1:] {
+		if len(arg) == 10 && arg[4] == '-' && arg[7] == '-' {
+			date = arg
+		} else {
+			project = arg
+		}
+	}
+
+	if project == "" {
+		_ = b.Send(chatID, "활성 프로젝트가 없습니다. !history <프로젝트명> 형식으로 사용하세요.")
+		return
+	}
+
+	content, err := ReadHistory(project, date)
+	if err != nil {
+		_ = b.Send(chatID, "⚠️ 히스토리 조회 실패: "+err.Error())
+		return
+	}
+	if content == "" {
+		_ = b.Send(chatID, fmt.Sprintf("📅 %s / %s: 기록 없음", project, date))
+		return
+	}
+	// Telegram has 4096 char limit per message — send first 3800 chars
+	if len([]rune(content)) > 3800 {
+		runes := []rune(content)
+		content = string(runes[:3800]) + "\n...(잘림)"
+	}
+	_ = b.Send(chatID, fmt.Sprintf("📅 %s / %s:\n%s", project, date, content))
 }
 
 // handleBackend handles !backend — displays or switches the active AI backend.

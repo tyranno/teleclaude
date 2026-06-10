@@ -48,14 +48,20 @@ func (m *Manager) SetBackend(name string) error {
 	case "claude":
 		m.client = m.claudeClient
 		m.backendName = "claude"
+		log.Printf("[manager] backend → claude (worker_model=%q)", m.cfg.WorkerModel)
 	case "codex":
 		if m.codexClient == nil {
 			return fmt.Errorf("Codex가 설치되어 있지 않습니다")
 		}
 		m.client = m.codexClient
 		m.backendName = "codex"
+		log.Printf("[manager] backend → codex (codex_model=%q codex_manager_model=%q)", m.cfg.CodexModel, m.cfg.CodexManagerModel)
 	default:
 		return fmt.Errorf("알 수 없는 백엔드: %s (claude | codex)", name)
+	}
+	// Persist so the setting survives restarts.
+	if err := m.store.SetStoredBackend(name); err != nil {
+		log.Printf("[manager] backend persist failed: %v", err)
 	}
 	return nil
 }
@@ -72,9 +78,31 @@ func (m *Manager) CodexAvailable() bool {
 	return m.codexClient != nil
 }
 
+// detectBackendSwitchIntent checks if the message explicitly mentions switching the AI backend.
+// Returns "codex" or "claude" if detected, "" otherwise.
+func detectBackendSwitchIntent(text string) string {
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "codex") && (strings.Contains(lower, "backend") || strings.Contains(lower, "백엔드")) {
+		return "codex"
+	}
+	if strings.Contains(lower, "claude") && (strings.Contains(lower, "backend") || strings.Contains(lower, "백엔드")) {
+		return "claude"
+	}
+	return ""
+}
+
 // Handle routes a free-text message to the right project/conversation and runs the Worker.
 // Plan SC: 자연어 → 정확 라우팅 → 해당 디렉토리 작업, 대화별 맥락 분리.
 func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s MessageSender) {
+	// Pre-check: auto-switch backend if the message mentions it.
+	if target := detectBackendSwitchIntent(text); target != "" && target != m.Backend() {
+		if err := m.SetBackend(target); err != nil {
+			_ = s.Send(chatID, "⚠️ 백엔드 전환 실패: "+err.Error())
+		} else {
+			_ = s.Send(chatID, "🔄 백엔드 전환: "+strings.ToUpper(target))
+		}
+	}
+
 	m.backendMu.RLock()
 	currentBackend := m.backendName
 	currentClient := m.client
@@ -236,6 +264,14 @@ func isContextOverflow(text string) bool {
 		strings.Contains(lower, "context window")
 }
 
+// workerModelForBackend returns the right model string based on the active backend.
+func (m *Manager) workerModelForBackend() string {
+	if m.Backend() == "codex" {
+		return m.cfg.CodexModel
+	}
+	return m.cfg.WorkerModel
+}
+
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.
 // If history grows too large, it auto-creates a continuation conversation.
 func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project string, c *Conversation, s MessageSender, client ClaudeClient) {
@@ -314,26 +350,36 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	globalMemory := readGlobalMemory()
 	projectMemory := readProjectMemory(p.Path)
 	prompt := buildContextPrompt(text, parentSummary, globalMemory, projectMemory, historyForPrompt)
+
+	backend := m.Backend()
+	workerModel := m.workerModelForBackend()
+	log.Printf("[worker] ▶ backend=%s model=%q project=%s conv=%s resume=%v prompt=%d chars",
+		backend, workerModel, project, workConv.ID, workConv.Started, len(prompt))
+
 	res, err := client.Run(ctx, RunRequest{
 		Prompt:    prompt,
 		WorkDir:   p.Path,
 		SessionID: workConv.SessionID,
 		Resume:    workConv.Started,
-		Model:     m.cfg.WorkerModel,
+		Model:     workerModel,
 	})
 	close(heartbeatDone)
 	elapsed := time.Since(startTime)
 
 	if err != nil {
 		if ctx.Err() != nil {
-			// Timeout or cancelled
+			log.Printf("[worker] ✗ backend=%s context cancelled/timeout after %s", backend, elapsed)
 			_ = m.workerStatus.UpdateStatus(project, workConv.ID, "timeout", ctx.Err().Error())
 			return
 		}
+		log.Printf("[worker] ✗ backend=%s error after %s: %v", backend, elapsed, err)
 		_ = s.Send(chatID, "⚠️ 작업 실패: "+err.Error())
 		_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
 		return
 	}
+
+	log.Printf("[worker] ✅ backend=%s elapsed=%s output=%d bytes session=%q",
+		backend, elapsed, len(res.Text), res.SessionID)
 
 	// Reactive: if Worker hit Claude's context limit, auto-create continuation and retry once.
 	if res.IsError && isContextOverflow(res.Text) {
@@ -346,12 +392,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 			workConv = newC
 			_ = s.Send(chatID, "📝 세션 한계에 도달해 새 시리즈로 재시작합니다...")
 			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, nil)
+			log.Printf("[worker] ▶ retry backend=%s model=%q conv=%s (context overflow)", backend, workerModel, workConv.ID)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:    retryPrompt,
 				WorkDir:   p.Path,
 				SessionID: workConv.SessionID,
 				Resume:    false,
-				Model:     m.cfg.WorkerModel,
+				Model:     workerModel,
 			})
 			elapsed = time.Since(startTime)
 			if err != nil {
@@ -395,6 +442,13 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 	}
 	if err := m.store.SetActive(project, workConv.ID); err != nil {
 		log.Printf("[manager] set active: %v", err)
+	}
+
+	// Append to date-based history log for !history command.
+	if res.Text != "" {
+		if herr := WriteHistory(project, workConv.Title, text, res.Text); herr != nil {
+			log.Printf("[manager] history write error: %v", herr)
+		}
 	}
 
 	// Update Worker status to completed
