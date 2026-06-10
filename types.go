@@ -19,6 +19,7 @@ type Config struct {
 	CodexPath         string // "" = auto-detect
 	CodexModel        string // worker model (powerful) — "" = codex built-in default
 	CodexManagerModel string // routing model (fast/cheap) — "" = same as CodexModel
+	DefaultBackend    string // "claude" | "codex" — "" = "claude"
 }
 
 // ConversationTurn represents one exchange in a conversation.
@@ -59,8 +60,9 @@ type ActiveRef struct {
 
 // StoreData is the root persisted to store.json (별도 저장소).
 type StoreData struct {
-	Projects map[string]*Project `json:"projects"`
-	Active   ActiveRef           `json:"active"`
+	Projects      map[string]*Project `json:"projects"`
+	Active        ActiveRef           `json:"active"`
+	ActiveBackend string              `json:"activeBackend,omitempty"` // "claude"|"codex"; "" means claude
 }
 
 // --- Manager routing I/O (Design §3.2) ---
@@ -96,6 +98,24 @@ type RouteDecision struct {
 	ScheduleInterval string `json:"scheduleInterval,omitempty"` // "30m", "2h", "hourly", "daily" …
 	ScheduleTask     string `json:"scheduleTask,omitempty"`      // message or Claude prompt
 	ScheduleIsTask   bool   `json:"scheduleIsTask,omitempty"`    // true → dispatch through Worker
+}
+
+// Task is a unified scheduled item replacing Reminder and CronJob.
+// CronExpr != "" → recurring (robfig/cron/v3 syntax, e.g. "0 9 * * 1-5").
+// CronExpr == "" → one-shot (FireAt used).
+// Status: "pending" | "paused" | "cancelled"
+type Task struct {
+	ID        string    `json:"id"`
+	ChatID    int64     `json:"chatId"`
+	Prompt    string    `json:"prompt"`
+	Script    string    `json:"script,omitempty"`   // bash pre-check; empty = skip
+	CronExpr  string    `json:"cronExpr,omitempty"` // standard 5-field cron
+	FireAt    time.Time `json:"fireAt,omitempty"`   // one-shot: when to fire
+	Status    string    `json:"status"`
+	IsTask    bool      `json:"isTask"` // true = Claude Worker, false = notify
+	Label     string    `json:"label"`
+	CreatedAt time.Time `json:"createdAt"`
+	LastFired time.Time `json:"lastFired,omitempty"`
 }
 
 // Action constants.
@@ -167,4 +187,6 @@ type StoreRepo interface {
 	SetActive(project, convID string) error
 	GetActive() ActiveRef
 	GetParent(project, convID string) (*Conversation, bool)
+	GetStoredBackend() string
+	SetStoredBackend(name string) error
 }
