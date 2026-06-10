@@ -22,8 +22,49 @@ type codexRunner struct {
 	cfg       *Config
 }
 
+// resolveNativeCodex finds the platform-specific codex.exe given the npm .cmd wrapper path.
+// npm installs codex.cmd at <root> and the native binary inside node_modules.
+// Running the native exe directly avoids cmd.exe + node.exe stdin piping issues.
+func resolveNativeCodex(cmdPath string) string {
+	dir := filepath.Dir(cmdPath) // e.g. C:\Program Files\nodejs
+	// Try both nested (npm global) and flat node_modules layouts.
+	roots := []string{
+		filepath.Join(dir, "node_modules", "@openai", "codex", "node_modules", "@openai"),
+		filepath.Join(dir, "node_modules", "@openai"),
+	}
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !strings.HasPrefix(e.Name(), "codex-") {
+				continue
+			}
+			vendorDir := filepath.Join(root, e.Name(), "vendor")
+			triples, _ := os.ReadDir(vendorDir)
+			for _, triple := range triples {
+				exe := filepath.Join(vendorDir, triple.Name(), "bin", "codex.exe")
+				if _, err := os.Stat(exe); err == nil {
+					return exe
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // NewCodexRunner builds a ClaudeClient backed by the local codex CLI.
+// If given an npm .cmd wrapper, it resolves to the native codex.exe to avoid
+// cmd.exe + node.exe chain issues with stdin and spaces-in-path.
 func NewCodexRunner(codexPath string, cfg *Config) *codexRunner {
+	ext := strings.ToLower(filepath.Ext(codexPath))
+	if ext == ".cmd" || ext == ".bat" {
+		if native := resolveNativeCodex(codexPath); native != "" {
+			log.Printf("[codex] resolved native binary: %s", native)
+			codexPath = native
+		}
+	}
 	return &codexRunner{codexPath: codexPath, cfg: cfg}
 }
 
@@ -112,13 +153,44 @@ func logCodexEvent(line string) {
 }
 
 // exec runs codex with real-time JSONL event logging and process-tree cancellation.
-func (r *codexRunner) exec(ctx context.Context, dir string, args []string) (stdout, stderr string, err error) {
-	cmd := exec.CommandContext(ctx, r.codexPath, args...)
+// stdinData, if non-empty, is piped to the process stdin (used for single-turn prompts).
+// Passing prompt via stdin + EOF tells codex to process one turn then exit (avoids REPL loop).
+func (r *codexRunner) exec(ctx context.Context, dir string, args []string, stdinData string) (stdout, stderr string, err error) {
+	// On Windows, .cmd/.bat files need cmd.exe /C with special quoting.
+	// Go's automatic arg escaping conflicts with cmd.exe /C quoting rules:
+	//   cmd.exe /C "path with spaces" → strips first & last quote → unquoted path
+	// Fix: use the double-outer-quote pattern and bypass Go quoting via SysProcAttr.CmdLine:
+	//   cmd.exe /C ""path with spaces" arg1 "arg2 with spaces" ..."
+	// cmd.exe strips outer quotes leaving the properly-quoted inner command.
+	ext := strings.ToLower(filepath.Ext(r.codexPath))
+	var cmd *exec.Cmd
+	if ext == ".cmd" || ext == ".bat" {
+		var sb strings.Builder
+		sb.WriteString(`"`)   // outer quote open
+		sb.WriteString(`"`)   // inner path quote open
+		sb.WriteString(r.codexPath)
+		sb.WriteString(`"`)   // inner path quote close
+		for _, a := range args {
+			sb.WriteString(" ")
+			if strings.ContainsAny(a, " \t") {
+				sb.WriteString(`"`)
+				sb.WriteString(a)
+				sb.WriteString(`"`)
+			} else {
+				sb.WriteString(a)
+			}
+		}
+		sb.WriteString(`"`)   // outer quote close
+		cmd = exec.CommandContext(ctx, "cmd.exe")
+		applyCmdLine(cmd, "cmd.exe /C "+sb.String())
+	} else {
+		cmd = exec.CommandContext(ctx, r.codexPath, args...)
+	}
 	cmd.Dir = dir
 	cmd.Cancel = func() error {
 		log.Printf("[codex] ⚠ cancelling (PID %d) — killing process tree + all codex.exe", cmd.Process.Pid)
 		killErr := killTree(cmd.Process.Pid)
-		exec.Command("taskkill", "/F", "/IM", "codex.exe").Run()
+		killByImageName("codex" + exeSuffix)
 		return killErr
 	}
 
@@ -129,6 +201,11 @@ func (r *codexRunner) exec(ctx context.Context, dir string, args []string) (stdo
 
 	var errBuf bytes.Buffer
 	cmd.Stderr = &errBuf
+
+	// Pipe prompt via stdin so codex processes one turn then exits on EOF.
+	if stdinData != "" {
+		cmd.Stdin = strings.NewReader(stdinData)
+	}
 
 	if startErr := cmd.Start(); startErr != nil {
 		pr.Close()
@@ -204,7 +281,7 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 
 	log.Printf("[codex] route: model=%q projects=%d", codexManagerModel(r.cfg), len(req.Projects))
 	home, _ := os.UserHomeDir()
-	_, stderr, err := r.exec(routeCtx, home, args)
+	_, stderr, err := r.exec(routeCtx, home, args, "")
 	if err != nil {
 		return RouteDecision{}, fmt.Errorf("codex manager 호출 실패: %w (%s)", err, strings.TrimSpace(stderr))
 	}
@@ -233,35 +310,29 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 		model = codexWorkerModel(r.cfg)
 	}
 
-	var args []string
-	if req.Resume && req.SessionID != "" {
-		args = []string{
-			"exec", "resume", req.SessionID,
-			"--ignore-user-config",
-			"--dangerously-bypass-approvals-and-sandbox",
-			"--skip-git-repo-check",
-			"--json",
-			"-o", outFile,
-		}
-	} else {
-		args = []string{
-			"exec",
-			"-C", req.WorkDir,
-			"--ignore-user-config",
-			"--dangerously-bypass-approvals-and-sandbox",
-			"--skip-git-repo-check",
-			"--json",
-			"-o", outFile,
-		}
+	// Codex exec without --ephemeral enters a REPL loop and waits for more stdin after
+	// each turn, causing "Reading additional input from stdin..." on EOF.
+	// With --ephemeral, exec runs a single non-interactive turn and exits cleanly.
+	// Conversation context is preserved via buildContextPrompt (history in every prompt).
+	args := []string{
+		"exec",
+		"-C", req.WorkDir,
+		"--ignore-user-config",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"--skip-git-repo-check",
+		"--ephemeral",
+		"--json",
+		"-o", outFile,
 	}
 	if model != "" {
 		args = append(args, "-m", model)
 	}
 	args = append(args, req.Prompt)
 
-	log.Printf("[codex] run: model=%q session=%s resume=%v dir=%s", model, req.SessionID, req.Resume, req.WorkDir)
+	log.Printf("[codex] run: model=%q session=%s resume=%v dir=%s prompt=%d chars",
+		model, req.SessionID, req.Resume, req.WorkDir, len(req.Prompt))
 
-	stdout, stderr, err := r.exec(ctx, req.WorkDir, args)
+	stdout, stderr, err := r.exec(ctx, req.WorkDir, args, "")
 	if err != nil {
 		if ctx.Err() != nil {
 			log.Printf("[codex] run: context cancelled/timed out")

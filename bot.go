@@ -340,7 +340,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 		return
 	}
 	srcDir := filepath.Dir(exe)
-	newExe := filepath.Join(srcDir, "teleclaude_new.exe")
+	newExe := filepath.Join(srcDir, "teleclaude_new"+exeSuffix)
 	readyFile := filepath.Join(os.TempDir(), fmt.Sprintf(".teleclaude_ready_%d", os.Getpid()))
 
 	// Verify source code exists in srcDir (fix: exe copied to different dir would silently fail)
@@ -352,9 +352,9 @@ func (b *Bot) handleUpdate(chatID int64) {
 	// If we're already running as teleclaude_new.exe, the self-rename from the previous
 	// handoff hasn't completed yet (or failed). teleclaude_new.exe is our own exe file,
 	// so go build cannot overwrite it. Abort and instruct the user.
-	if filepath.Base(exe) == "teleclaude_new.exe" {
+	if filepath.Base(exe) == "teleclaude_new"+exeSuffix {
 		if _, serr := os.Stat(newExe); serr == nil {
-			_ = b.Send(chatID, "⚠️ 이전 핸드오프의 이름 변경이 아직 완료되지 않았습니다.\n잠시 후 다시 시도하거나 teleclaude_new.exe를 teleclaude.exe로 수동 교체 후 재시작하세요.")
+			_ = b.Send(chatID, "⚠️ 이전 핸드오프의 이름 변경이 아직 완료되지 않았습니다.\n잠시 후 다시 시도하거나 teleclaude_new를 teleclaude로 수동 교체 후 재시작하세요.")
 			return
 		}
 	}

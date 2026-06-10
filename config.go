@@ -108,6 +108,8 @@ func applyConfigKV(cfg *Config, key, val string) error {
 		cfg.CodexModel = val
 	case "CODEX_MANAGER_MODEL":
 		cfg.CodexManagerModel = val
+	case "DEFAULT_BACKEND":
+		cfg.DefaultBackend = strings.ToLower(val)
 	}
 	return nil
 }
@@ -146,6 +148,9 @@ func (c *Config) validate() error {
 	if len(c.AllowedUserIDs) == 0 {
 		return fmt.Errorf("ALLOWED_USER_IDS가 비어 있습니다 (보안상 최소 1개 필요)")
 	}
+	if c.DefaultBackend != "" && c.DefaultBackend != "claude" && c.DefaultBackend != "codex" {
+		return fmt.Errorf("DEFAULT_BACKEND는 'claude' 또는 'codex'여야 합니다: %q", c.DefaultBackend)
+	}
 	return nil
 }
 
@@ -154,7 +159,7 @@ func (c *Config) IsAllowed(userID int64) bool {
 	return slices.Contains(c.AllowedUserIDs, userID)
 }
 
-// findClaude resolves the claude CLI path: explicit > PATH > common Windows locations.
+// findClaude resolves the claude CLI path: explicit > PATH > platform-specific locations.
 func findClaude(explicit string) (string, error) {
 	if explicit != "" {
 		if _, err := os.Stat(explicit); err == nil {
@@ -165,15 +170,8 @@ func findClaude(explicit string) (string, error) {
 	if p, err := exec.LookPath("claude"); err == nil {
 		return p, nil
 	}
-	// Common Windows install locations (npm global, etc.)
 	home, _ := os.UserHomeDir()
-	candidates := []string{
-		filepath.Join(home, "AppData", "Roaming", "npm", "claude.cmd"),
-		filepath.Join(home, "AppData", "Roaming", "npm", "claude.exe"),
-		filepath.Join(home, ".local", "bin", "claude.exe"),
-		`C:\Program Files\nodejs\claude.cmd`,
-	}
-	for _, c := range candidates {
+	for _, c := range findClaudeOS(home) {
 		if _, err := os.Stat(c); err == nil {
 			return c, nil
 		}

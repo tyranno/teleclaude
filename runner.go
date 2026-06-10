@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 )
 
@@ -105,11 +104,6 @@ func (r *claudeRunner) exec(ctx context.Context, dir string, args []string) (std
 	cmd.Stderr = &errBuf
 	err = cmd.Run()
 	return outBuf.String(), errBuf.String(), err
-}
-
-// killTree force-kills a process and its children on Windows.
-func killTree(pid int) error {
-	return exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(pid)).Run()
 }
 
 // --- Pure parsing helpers (unit-testable without claude) ---

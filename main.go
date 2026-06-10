@@ -80,76 +80,6 @@ func writePIDFile() {
 	_ = os.WriteFile(pidFilePath(), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
 }
 
-// killPreviousInstance terminates any running teleclaude processes (except self).
-// Uses two strategies: PID file (targeted) + image-name scan (robust fallback).
-func killPreviousInstance() {
-	myPID := os.Getpid()
-	killed := false
-
-	// Strategy 1: PID file — fast, targeted.
-	if b, err := os.ReadFile(pidFilePath()); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 && pid != myPID {
-			if exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run() == nil {
-				log.Printf("[main] killed previous instance via PID file (PID %d)", pid)
-				killed = true
-			}
-		}
-	}
-
-	// Strategy 2: image-name scan — catches instances that never wrote a PID file.
-	for _, name := range []string{"teleclaude.exe", "teleclaude_new.exe"} {
-		out, _ := exec.Command("tasklist", "/FI", "IMAGENAME eq "+name, "/FO", "CSV", "/NH").CombinedOutput()
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(strings.ToLower(line), "info:") {
-				continue
-			}
-			// CSV line: "teleclaude.exe","1234","Console","1","12,345 K"
-			parts := strings.Split(line, ",")
-			if len(parts) < 2 {
-				continue
-			}
-			pid, err := strconv.Atoi(strings.Trim(parts[1], `"`))
-			if err != nil || pid <= 0 || pid == myPID {
-				continue
-			}
-			if exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run() == nil {
-				log.Printf("[main] killed competing %s (PID %d)", name, pid)
-				killed = true
-			}
-		}
-	}
-
-	if killed {
-		time.Sleep(3 * time.Second) // wait for Telegram to release the polling session
-	}
-}
-
-// waitForProcessExit polls until the given PID is no longer alive, or timeout.
-// On timeout, force-kills the process as a last resort.
-func waitForProcessExit(pid int, timeout time.Duration) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		time.Sleep(300 * time.Millisecond)
-		out, _ := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH").CombinedOutput()
-		alive := false
-		for _, line := range strings.Split(string(out), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && !strings.HasPrefix(strings.ToLower(line), "info:") {
-				alive = true
-				break
-			}
-		}
-		if !alive {
-			log.Printf("[main] old process (PID %d) has exited", pid)
-			return
-		}
-	}
-	// Timeout: force-kill to unblock.
-	exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
-	log.Printf("[main] force-killed old process (PID %d) after timeout", pid)
-}
-
 func run(configOverride, handoffReadyFile, notifyChat string) error {
 	cfgPath := configOverride
 	if cfgPath == "" {
@@ -212,11 +142,39 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	}
 	manager := NewManager(runner, codexRunner, store, cfg)
 
+	// Restore backend: persisted choice takes priority, then DEFAULT_BACKEND from config.
+	if saved := store.GetStoredBackend(); saved != "" && saved != "claude" {
+		if err := manager.SetBackend(saved); err != nil {
+			log.Printf("[main] ignoring persisted backend %q: %v", saved, err)
+		} else {
+			log.Printf("[main] restored backend: %s", saved)
+		}
+	} else if saved == "" && cfg.DefaultBackend != "" && cfg.DefaultBackend != "claude" {
+		if err := manager.SetBackend(cfg.DefaultBackend); err != nil {
+			log.Printf("[main] default backend %q failed: %v", cfg.DefaultBackend, err)
+		} else {
+			log.Printf("[main] default backend (config): %s", cfg.DefaultBackend)
+		}
+	}
+
 	api, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
 	if err != nil {
 		return fmt.Errorf("텔레그램 봇 초기화 실패: %w", err)
 	}
-	log.Printf("[main] allowlist: %v, manager=%s, worker=%q", cfg.AllowedUserIDs, cfg.ManagerModel, cfg.WorkerModel)
+	activeBackend := manager.Backend()
+	var activeManagerModel, activeWorkerModel string
+	if activeBackend == "codex" {
+		activeWorkerModel = cfg.CodexModel
+		activeManagerModel = cfg.CodexManagerModel
+		if activeManagerModel == "" {
+			activeManagerModel = cfg.CodexModel
+		}
+	} else {
+		activeManagerModel = cfg.ManagerModel
+		activeWorkerModel = cfg.WorkerModel
+	}
+	log.Printf("[main] allowlist: %v, backend=%s manager=%s worker=%q",
+		cfg.AllowedUserIDs, activeBackend, activeManagerModel, activeWorkerModel)
 
 	// Scheduler: reminders + cron jobs
 	sched := NewScheduler(filepath.Join(dir, "schedule.json"))
@@ -284,9 +242,9 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 			if notifyChatID != 0 {
 				_ = bot.Send(notifyChatID, fmt.Sprintf("✅ 새 버전 활성화됨! (PID %d)", os.Getpid()))
 			}
-			// Rename teleclaude_new.exe → teleclaude.exe so the next !update
+			// Rename teleclaude_new → teleclaude so the next !update
 			// can build to a fresh file (can't overwrite a running exe on Windows).
-			if filepath.Base(currentExe) == "teleclaude_new.exe" {
+			if filepath.Base(currentExe) == "teleclaude_new"+exeSuffix {
 				go selfRename(currentExe, bot, notifyChatID)
 			}
 		}
@@ -296,10 +254,10 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	return nil
 }
 
-// selfRename renames teleclaude_new.exe → teleclaude.exe.
-// Windows allows renaming a running exe (kernel tracks files by handle, not name).
+// selfRename renames teleclaude_new → teleclaude.
+// On Windows, renaming a running exe is allowed (kernel tracks by handle, not name).
 func selfRename(currentExe string, bot *Bot, notifyChatID int64) {
-	target := filepath.Join(filepath.Dir(currentExe), "teleclaude.exe")
+	target := filepath.Join(filepath.Dir(currentExe), "teleclaude"+exeSuffix)
 	var lastErr error
 	for i := 0; i < 10; i++ {
 		time.Sleep(time.Second)
