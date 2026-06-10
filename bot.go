@@ -170,6 +170,8 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 			return
 		}
 		b.handleUpdate(chatID)
+	case "!task":
+		b.handleTask(chatID, text, fields)
 	case "!remind":
 		b.handleRemind(chatID, text, fields)
 	case "!cron":
@@ -537,6 +539,324 @@ func (b *Bot) handleCron(chatID int64, text string, fields []string) {
 	default:
 		_ = b.Send(chatID, "사용법: !cron add | list | remove")
 	}
+}
+
+// handleTask processes !task commands — the unified scheduling interface.
+//
+// Subcommands:
+//
+//	!task add <cron|duration> [task] <prompt>
+//	!task add <cron|duration> --script <script> [task] <prompt>
+//	!task once <HH:MM|YYYY-MM-DD HH:MM> <message>
+//	!task list [pending|paused|all]
+//	!task pause|resume|cancel <id>
+//	!task update <id> [--cron <expr>] [--prompt <text>] [--script <script>]
+func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
+	if len(fields) < 2 {
+		_ = b.Send(chatID, taskHelpText())
+		return
+	}
+	switch fields[1] {
+	case "help":
+		_ = b.Send(chatID, taskHelpText())
+
+	case "list":
+		filter := "pending"
+		if len(fields) >= 3 {
+			filter = fields[2]
+		}
+		tasks := b.scheduler.ListTasks(filter)
+		if len(tasks) == 0 {
+			_ = b.Send(chatID, "등록된 작업이 없습니다. (필터: "+filter+")")
+			return
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "📋 작업 목록 (%s):\n", filter)
+		for _, t := range tasks {
+			kind := "알림"
+			if t.IsTask {
+				kind = "작업"
+			}
+			schedule := t.CronExpr
+			if schedule == "" {
+				schedule = "일회성 " + t.FireAt.Format("2006-01-02 15:04")
+			}
+			next := b.scheduler.NextFire(t.ID)
+			nextStr := ""
+			if !next.IsZero() {
+				nextStr = fmt.Sprintf(" → %s 후", time.Until(next).Round(time.Second))
+			}
+			scriptMark := ""
+			if t.Script != "" {
+				scriptMark = " [스크립트]"
+			}
+			fmt.Fprintf(&sb, "[%s] %s (%s/%s)%s\n  %s%s\n  ▶ %s\n",
+				t.ID, t.Label, t.Status, kind, scriptMark, schedule, nextStr, truncate(t.Prompt, 60))
+		}
+		_ = b.Send(chatID, sb.String())
+
+	case "pause":
+		if len(fields) < 3 {
+			_ = b.Send(chatID, "사용법: !task pause <id>")
+			return
+		}
+		if err := b.scheduler.PauseTask(fields[2]); err != nil {
+			_ = b.Send(chatID, "⚠️ "+err.Error())
+		} else {
+			_ = b.Send(chatID, "⏸ 작업 일시정지됨: "+fields[2])
+		}
+
+	case "resume":
+		if len(fields) < 3 {
+			_ = b.Send(chatID, "사용법: !task resume <id>")
+			return
+		}
+		if err := b.scheduler.ResumeTask(fields[2]); err != nil {
+			_ = b.Send(chatID, "⚠️ "+err.Error())
+		} else {
+			_ = b.Send(chatID, "▶️ 작업 재개됨: "+fields[2])
+		}
+
+	case "cancel":
+		if len(fields) < 3 {
+			_ = b.Send(chatID, "사용법: !task cancel <id>")
+			return
+		}
+		if err := b.scheduler.CancelTask(fields[2]); err != nil {
+			_ = b.Send(chatID, "⚠️ "+err.Error())
+		} else {
+			_ = b.Send(chatID, "✅ 작업 취소됨: "+fields[2])
+		}
+
+	case "update":
+		// !task update <id> [--cron <expr>] [--prompt <text>] [--script <script>]
+		if len(fields) < 3 {
+			_ = b.Send(chatID, "사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>]")
+			return
+		}
+		id := fields[2]
+		cronExpr, prompt, script := parseFlags(fields[3:], "--cron", "--prompt", "--script")
+		if err := b.scheduler.UpdateTask(id, cronExpr, prompt, script); err != nil {
+			_ = b.Send(chatID, "⚠️ "+err.Error())
+		} else {
+			_ = b.Send(chatID, "✅ 작업 업데이트됨: "+id)
+		}
+
+	case "once":
+		// !task once <HH:MM|YYYY-MM-DD HH:MM> <message>
+		if len(fields) < 4 {
+			_ = b.Send(chatID, "사용법: !task once <HH:MM|YYYY-MM-DD HH:MM> <메시지>")
+			return
+		}
+		fireAt, msgStart, err := parseOnceDatetime(fields[2:])
+		if err != nil {
+			_ = b.Send(chatID, "⚠️ 시각 형식 오류: "+err.Error())
+			return
+		}
+		msg := strings.Join(fields[2+msgStart:], " ")
+		if msg == "" {
+			_ = b.Send(chatID, "⚠️ 메시지를 입력해주세요.")
+			return
+		}
+		t, err := b.scheduler.AddReminder(chatID, msg, fireAt)
+		if err != nil {
+			_ = b.Send(chatID, "⚠️ 등록 실패: "+err.Error())
+			return
+		}
+		_ = b.Send(chatID, fmt.Sprintf("✅ 일회성 등록 [%s] — %s에 실행\n  %s",
+			t.ID, fireAt.Format("2006-01-02 15:04"), msg))
+
+	case "add":
+		// !task add <cron|duration> [--script <script>] [task] <prompt>
+		if len(fields) < 4 {
+			_ = b.Send(chatID, "사용법: !task add <cron식|주기> [task] <프롬프트>\n예) !task add daily task 오늘 요약해줘\n    !task add 0 9 * * 1-5 task 주식 확인")
+			return
+		}
+		cronExpr, script, isTask, prompt, err := parseTaskAddArgs(fields[2:])
+		if err != nil {
+			_ = b.Send(chatID, "⚠️ "+err.Error())
+			return
+		}
+		kind := "알림"
+		if isTask {
+			kind = "Claude 작업"
+		}
+		t := &Task{
+			ID:        newTaskID(),
+			ChatID:    chatID,
+			Prompt:    prompt,
+			Script:    script,
+			CronExpr:  cronExpr,
+			Status:    "pending",
+			IsTask:    isTask,
+			Label:     truncate(prompt, 30),
+			CreatedAt: time.Now(),
+		}
+		if err := b.scheduler.AddTask(t); err != nil {
+			_ = b.Send(chatID, "⚠️ 등록 실패: "+err.Error())
+			return
+		}
+		scriptNote := ""
+		if script != "" {
+			scriptNote = " [스크립트 사전확인 있음]"
+		}
+		_ = b.Send(chatID, fmt.Sprintf("✅ 작업 등록 [%s] %s (%s)%s\n  %s\n  ▶ %s",
+			t.ID, cronExpr, kind, scriptNote, prompt, kind))
+
+	default:
+		_ = b.Send(chatID, "알 수 없는 !task 하위 명령. !task help 참조")
+	}
+}
+
+// parseTaskAddArgs parses fields after "!task add".
+// Returns (cronExpr, script, isTask, prompt, error).
+// Supports: 5-field cron tokens, duration shorthand, --script flag, task keyword.
+func parseTaskAddArgs(args []string) (cronExpr, script string, isTask bool, prompt string, err error) {
+	if len(args) == 0 {
+		return "", "", false, "", fmt.Errorf("인수가 부족합니다")
+	}
+
+	// Extract --script flag from args before parsing cron/prompt
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--script" && i+1 < len(args) {
+			script = args[i+1]
+			i++
+		} else {
+			rest = append(rest, args[i])
+		}
+	}
+	args = rest
+
+	if len(args) == 0 {
+		return "", "", false, "", fmt.Errorf("cron 식 또는 주기를 입력하세요")
+	}
+
+	// Determine cron expression
+	var cronEnd int
+	if len(args) >= 5 && allCronFields(args[0:5]) {
+		// 5-field cron: "0 9 * * 1-5"
+		cronExpr = strings.Join(args[0:5], " ")
+		cronEnd = 5
+	} else if args[0] == "@every" && len(args) >= 2 {
+		cronExpr = "@every " + args[1]
+		cronEnd = 2
+	} else {
+		// Duration shorthand: 30m, 2h, daily, etc.
+		dur, _, pErr := ParseSchedule(args[0])
+		if pErr != nil {
+			return "", "", false, "", fmt.Errorf("주기 형식 오류 (%q): %v\n예) 30m, 2h, daily, 또는 5-field cron (0 9 * * 1-5)", args[0], pErr)
+		}
+		cronExpr = durationToCron(dur)
+		cronEnd = 1
+	}
+
+	remaining := args[cronEnd:]
+	if len(remaining) == 0 {
+		return "", "", false, "", fmt.Errorf("프롬프트가 없습니다")
+	}
+
+	// Optional "task" keyword
+	if remaining[0] == "task" {
+		isTask = true
+		remaining = remaining[1:]
+	}
+
+	if len(remaining) == 0 {
+		return "", "", false, "", fmt.Errorf("프롬프트가 없습니다")
+	}
+	prompt = strings.Join(remaining, " ")
+	return cronExpr, script, isTask, prompt, nil
+}
+
+// allCronFields returns true if all 5 tokens look like valid cron expression fields.
+func allCronFields(tokens []string) bool {
+	if len(tokens) < 5 {
+		return false
+	}
+	for _, t := range tokens[:5] {
+		for _, c := range t {
+			if (c < '0' || c > '9') && c != '*' && c != '/' && c != '-' && c != ',' && c != '?' {
+				return false
+			}
+		}
+		if t == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// parseOnceDatetime parses "HH:MM" or "YYYY-MM-DD HH:MM" from the start of tokens.
+// Returns (fireAt, tokensConsumed, error).
+func parseOnceDatetime(tokens []string) (time.Time, int, error) {
+	if len(tokens) == 0 {
+		return time.Time{}, 0, fmt.Errorf("시각 없음")
+	}
+	now := time.Now()
+	// Try "HH:MM"
+	if t, err := time.ParseInLocation("15:04", tokens[0], time.Local); err == nil {
+		fireAt := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, time.Local)
+		if fireAt.Before(now) {
+			fireAt = fireAt.Add(24 * time.Hour)
+		}
+		return fireAt, 1, nil
+	}
+	// Try "YYYY-MM-DD HH:MM" (2 tokens)
+	if len(tokens) >= 2 {
+		combined := tokens[0] + " " + tokens[1]
+		if t, err := time.ParseInLocation("2006-01-02 15:04", combined, time.Local); err == nil {
+			return t, 2, nil
+		}
+	}
+	return time.Time{}, 0, fmt.Errorf("%q — HH:MM 또는 YYYY-MM-DD HH:MM 형식으로 입력하세요", tokens[0])
+}
+
+// parseFlags extracts up to 3 named flag values from tokens.
+// Each flag is "--name value". Returns values for flag1, flag2, flag3.
+func parseFlags(tokens []string, flag1, flag2, flag3 string) (v1, v2, v3 string) {
+	for i := 0; i < len(tokens)-1; i++ {
+		switch tokens[i] {
+		case flag1:
+			v1 = tokens[i+1]
+			i++
+		case flag2:
+			v2 = tokens[i+1]
+			i++
+		case flag3:
+			v3 = tokens[i+1]
+			i++
+		}
+	}
+	return
+}
+
+func taskHelpText() string {
+	return strings.TrimSpace(`
+📋 !task — 통합 스케줄 관리
+
+등록:
+!task add <주기> [task] <프롬프트>
+  주기: 30m, 2h, daily, weekly, 또는 5-field cron (0 9 * * 1-5)
+  task 키워드 있으면 Claude 작업, 없으면 알림
+  예) !task add daily task 오늘 요약해줘
+  예) !task add 0 9 * * 1-5 task 주식 확인
+
+스크립트 사전확인:
+!task add <주기> --script <bash_expr> [task] <프롬프트>
+  스크립트가 {"wakeAgent":true} 반환할 때만 실행
+
+일회성:
+!task once <HH:MM|YYYY-MM-DD HH:MM> <메시지>
+  예) !task once 09:00 아침 회의 준비해줘
+
+관리:
+!task list [pending|paused|all]
+!task pause <id>      — 일시정지
+!task resume <id>     — 재개
+!task cancel <id>     — 취소
+!task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>]
+`)
 }
 
 // handleBackend handles !backend — displays or switches the active AI backend.
