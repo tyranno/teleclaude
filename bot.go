@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,8 +78,15 @@ func (b *Bot) Run() {
 			log.Printf("[bot] denied user %d (%s)", userID, update.Message.From.UserName)
 			continue
 		}
-		text := strings.TrimSpace(update.Message.Text)
 		chatID := update.Message.Chat.ID
+
+		// Attachments take priority over text — download then dispatch with caption.
+		if b.hasAttachment(update.Message) {
+			go b.handleAttachment(chatID, update.Message)
+			continue
+		}
+
+		text := strings.TrimSpace(update.Message.Text)
 		if text == "" {
 			continue
 		}
@@ -857,6 +866,125 @@ func taskHelpText() string {
 !task cancel <id>     — 취소
 !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>]
 `)
+}
+
+// hasAttachment returns true if the message contains a downloadable file.
+func (b *Bot) hasAttachment(msg *tgbotapi.Message) bool {
+	return len(msg.Photo) > 0 || msg.Document != nil || msg.Video != nil ||
+		msg.Audio != nil || msg.Voice != nil
+}
+
+// handleAttachment downloads the attached file, saves it to ~/.teleclaude/attachments/,
+// and dispatches a combined prompt (caption + file path) to Claude.
+func (b *Bot) handleAttachment(chatID int64, msg *tgbotapi.Message) {
+	caption := strings.TrimSpace(msg.Caption)
+
+	fileID, ext := attachFileInfo(msg)
+	if fileID == "" {
+		if caption != "" {
+			b.dispatchText(chatID, caption)
+		}
+		return
+	}
+
+	savePath, err := b.downloadAttachment(fileID, ext)
+	if err != nil {
+		log.Printf("[bot] attachment download failed: %v", err)
+		_ = b.Send(chatID, "⚠️ 첨부파일 다운로드 실패: "+err.Error())
+		return
+	}
+
+	prompt := caption
+	if prompt == "" {
+		prompt = "첨부파일을 분석해줘"
+	}
+	prompt = prompt + "\n\n[첨부파일: " + savePath + "]"
+	b.dispatchText(chatID, prompt)
+}
+
+// attachFileInfo extracts the Telegram file ID and extension for the first attachment found.
+func attachFileInfo(msg *tgbotapi.Message) (fileID, ext string) {
+	if len(msg.Photo) > 0 {
+		// Use the last (highest-resolution) photo size.
+		return msg.Photo[len(msg.Photo)-1].FileID, ".jpg"
+	}
+	if msg.Document != nil {
+		ext := filepath.Ext(msg.Document.FileName)
+		if ext == "" {
+			ext = extFromMIME(msg.Document.MimeType)
+		}
+		return msg.Document.FileID, ext
+	}
+	if msg.Video != nil {
+		return msg.Video.FileID, ".mp4"
+	}
+	if msg.Audio != nil {
+		return msg.Audio.FileID, ".mp3"
+	}
+	if msg.Voice != nil {
+		return msg.Voice.FileID, ".ogg"
+	}
+	return "", ""
+}
+
+// downloadAttachment fetches a Telegram file by ID and saves it to the attachments directory.
+func (b *Bot) downloadAttachment(fileID, ext string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".teleclaude", "attachments")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("첨부파일 디렉터리 생성 실패: %w", err)
+	}
+
+	tgFile, err := b.api.GetFile(tgbotapi.FileConfig{FileID: fileID})
+	if err != nil {
+		return "", fmt.Errorf("Telegram 파일 정보 조회 실패: %w", err)
+	}
+	url := tgFile.Link(b.api.Token)
+
+	resp, err := http.Get(url) //nolint:noctx
+	if err != nil {
+		return "", fmt.Errorf("파일 다운로드 실패: %w", err)
+	}
+	defer resp.Body.Close()
+
+	saveName := fmt.Sprintf("%d%s", time.Now().UnixMilli(), ext)
+	savePath := filepath.Join(dir, saveName)
+	f, err := os.Create(savePath)
+	if err != nil {
+		return "", fmt.Errorf("파일 저장 실패: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return "", fmt.Errorf("파일 쓰기 실패: %w", err)
+	}
+	log.Printf("[bot] attachment saved: %s", savePath)
+	return savePath, nil
+}
+
+// extFromMIME returns a file extension guess from a MIME type.
+func extFromMIME(mime string) string {
+	switch strings.ToLower(mime) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "application/pdf":
+		return ".pdf"
+	case "text/plain":
+		return ".txt"
+	case "application/zip":
+		return ".zip"
+	default:
+		return ".bin"
+	}
 }
 
 // handleBackend handles !backend — displays or switches the active AI backend.
