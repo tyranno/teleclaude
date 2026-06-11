@@ -798,8 +798,15 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			_ = b.Send(chatID, "⚠️ 등록 실패: "+err.Error())
 			return
 		}
-		_ = b.Send(chatID, fmt.Sprintf("✅ 일회성 등록 [%s] — %s에 실행\n  %s",
-			t.ID, fireAt.Format("2006-01-02 15:04"), msg))
+		dayLabel := ""
+		now := time.Now()
+		if fireAt.Year() == now.Year() && fireAt.YearDay() == now.YearDay() {
+			dayLabel = " (오늘)"
+		} else if fireAt.Sub(now) < 48*time.Hour {
+			dayLabel = " (내일)"
+		}
+		_ = b.Send(chatID, fmt.Sprintf("✅ 일회성 등록 [%s] — %s%s에 실행\n  %s",
+			t.ID, fireAt.Format("2006-01-02 15:04"), dayLabel, msg))
 
 	case "add":
 		// !task add <cron|duration> [--script <script>] [task] <prompt>

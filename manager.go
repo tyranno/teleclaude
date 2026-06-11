@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -500,7 +501,6 @@ func (m *Manager) GetWorkerStatus(project, convID string) (WorkerStatus, bool) {
 }
 
 // DescribeActiveWorkers returns a human-readable status of all running Workers.
-// If hasETA is true, it also estimates remaining time (rough heuristic).
 func (m *Manager) DescribeActiveWorkers() string {
 	active := m.workerStatus.ListActive()
 	if len(active) == 0 {
@@ -508,32 +508,21 @@ func (m *Manager) DescribeActiveWorkers() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🔄 실행 중인 작업 (%d개):\n\n", len(active)))
+	fmt.Fprintf(&sb, "🔄 실행 중인 작업 (%d개):\n\n", len(active))
 	for i, ws := range active {
 		elapsed := time.Since(ws.StartTime)
 		mins := int(elapsed.Minutes())
 		secs := int(elapsed.Seconds()) % 60
 
-		elapsedStr := ""
+		var elapsedStr string
 		if mins > 0 {
 			elapsedStr = fmt.Sprintf("%d분 %d초", mins, secs)
 		} else {
 			elapsedStr = fmt.Sprintf("%d초", secs)
 		}
 
-		sb.WriteString(fmt.Sprintf("%d) 📂 %s · 💬 %s\n", i+1, ws.Project, ws.Title))
-		sb.WriteString(fmt.Sprintf("   ⏱️ %s 경과\n", elapsedStr))
-
-		// Rough ETA: if running < 30s, likely quick; if > 2min, likely long task
-		if mins > 2 {
-			estimatedTotal := time.Duration(mins*2) * time.Minute // rough guess: double the elapsed time
-			remaining := estimatedTotal - elapsed
-			if remaining > 0 {
-				remainMins := int(remaining.Minutes())
-				remainSecs := int(remaining.Seconds()) % 60
-				sb.WriteString(fmt.Sprintf("   ≈ %d분 %d초 남음 (예상)\n", remainMins, remainSecs))
-			}
-		}
+		fmt.Fprintf(&sb, "%d) 📂 %s · 💬 %s\n", i+1, ws.Project, ws.Title)
+		fmt.Fprintf(&sb, "   ⏱️ %s 경과\n", elapsedStr)
 	}
 	return sb.String()
 }
@@ -711,13 +700,15 @@ func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text st
 		return
 	}
 
-	// Prefer the active project; fall back to first available.
+	// Prefer the active project; fall back to alphabetically first to ensure determinism.
 	projectName := m.store.GetActive().Project
 	if _, ok := m.store.GetProject(projectName); !ok {
+		names := make([]string, 0, len(projects))
 		for name := range projects {
-			projectName = name
-			break
+			names = append(names, name)
 		}
+		sort.Strings(names)
+		projectName = names[0]
 	}
 
 	c, err := m.store.NewConversation(projectName, "📅 "+truncate(text, 28))
