@@ -231,7 +231,13 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 	case "!cancel":
 		b.cancel(chatID)
 	case "!status":
-		msg := b.manager.describeActive()
+		workers := b.manager.DescribeActiveWorkers()
+		var msg string
+		if workers == "실행 중인 작업 없음" {
+			msg = b.manager.describeActive()
+		} else {
+			msg = workers + "\n" + b.manager.describeActive()
+		}
 		b.mu.Lock()
 		qLen := len(b.queue)
 		b.mu.Unlock()
@@ -1207,7 +1213,7 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 	}
 
 	if project == "" {
-		_ = b.Send(chatID, "활성 프로젝트가 없습니다. !history <프로젝트명> 형식으로 사용하세요.")
+		_ = b.Send(chatID, "활성 프로젝트가 없습니다.\n!history list all 로 기록이 있는 프로젝트를 확인하거나 !history <프로젝트명> 형식으로 사용하세요.")
 		return
 	}
 
@@ -1279,7 +1285,7 @@ func helpText() string {
 !chat new [제목]             현재 프로젝트에 새 대화
 !chat list                   현재 프로젝트의 대화 목록
 !chat use <id>               대화 수동 전환
-!status                      현재 활성 대화 및 실행 중 작업
+!status                      실행 중 작업 + 활성 대화 + 백엔드
 !cancel                      진행 중 작업 취소
 
 스케줄 (통합):
