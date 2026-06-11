@@ -1308,11 +1308,18 @@ func (b *Bot) handleHistory(chatID int64, fields []string) {
 		_ = b.Send(chatID, fmt.Sprintf("📅 %s / %s: 기록 없음", project, date))
 		return
 	}
-	// Telegram limit is 4096 chars; header "📅 <project> / <date>:\n" can be ~60 chars.
-	const maxContent = 3900
-	if len([]rune(content)) > maxContent {
-		runes := []rune(content)
-		content = string(runes[:maxContent]) + "\n...(잘림)"
+	// Telegram's sendMessage limit is 4096 characters.
+	// Truncate by UTF-8 byte length (conservative for CJK: each Korean rune = 3 bytes).
+	// Reserve ~200 bytes for the "📅 <project> / <date>:\n" header.
+	const maxContentBytes = 3800
+	if len(content) > maxContentBytes {
+		end := maxContentBytes
+		b2 := []byte(content)
+		// Step back to the nearest valid UTF-8 rune boundary.
+		for end > 0 && (b2[end]&0xC0) == 0x80 {
+			end--
+		}
+		content = string(b2[:end]) + "\n...(잘림)"
 	}
 	_ = b.Send(chatID, fmt.Sprintf("📅 %s / %s:\n%s", project, date, content))
 }

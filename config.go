@@ -174,6 +174,8 @@ func parseBool(val string, def bool) bool {
 	}
 }
 
+const maxAllowedWorkers = 50
+
 func (c *Config) validate() error {
 	if c.TelegramBotToken == "" {
 		return fmt.Errorf("TELEGRAM_BOT_TOKEN이 설정되지 않았습니다")
@@ -183,6 +185,9 @@ func (c *Config) validate() error {
 	}
 	if c.DefaultBackend != "" && c.DefaultBackend != "claude" && c.DefaultBackend != "codex" {
 		return fmt.Errorf("DEFAULT_BACKEND는 'claude' 또는 'codex'여야 합니다: %q", c.DefaultBackend)
+	}
+	if c.MaxWorkers > maxAllowedWorkers {
+		return fmt.Errorf("MAX_WORKERS는 최대 %d까지 허용됩니다 (입력값: %d)", maxAllowedWorkers, c.MaxWorkers)
 	}
 	return nil
 }

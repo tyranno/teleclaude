@@ -55,8 +55,11 @@ func TestBot_QueueWhenFull(t *testing.T) {
 	if qLen != 1 {
 		t.Fatalf("queue len = %d, want 1", qLen)
 	}
-	if b.queue[0].chatID != 42 {
-		t.Errorf("queued chatID = %d, want 42", b.queue[0].chatID)
+	b.mu.Lock()
+	firstChatID := b.queue[0].chatID
+	b.mu.Unlock()
+	if firstChatID != 42 {
+		t.Errorf("queued chatID = %d, want 42", firstChatID)
 	}
 }
 
