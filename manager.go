@@ -135,7 +135,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 		// Routing failed entirely → fall back to the active conversation, else ask.
 		if active := m.store.GetActive(); active.Project != "" {
 			if c, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
-				m.runWorker(ctx, chatID, text, active.Project, c, s, currentClient)
+				m.runWorker(ctx, chatID, text, active.Project, "", c, s, currentClient)
 				return
 			}
 		}
@@ -169,7 +169,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 		}
 		c.Backend = currentBackend
 		_ = m.store.UpdateConversation(dec.Project, c)
-		m.runWorker(ctx, chatID, text, dec.Project, c, s, currentClient)
+		m.runWorker(ctx, chatID, text, dec.Project, "", c, s, currentClient)
 
 	case ActionResume:
 		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
@@ -182,7 +182,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 			}
 			newC.Backend = currentBackend
 			_ = m.store.UpdateConversation(dec.Project, newC)
-			m.runWorker(ctx, chatID, text, dec.Project, newC, s, currentClient)
+			m.runWorker(ctx, chatID, text, dec.Project, "", newC, s, currentClient)
 			return
 		}
 		convBackend := c.Backend
@@ -199,10 +199,10 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 			newConv.Backend = currentBackend
 			_ = m.store.UpdateConversation(dec.Project, newConv)
 			_ = m.store.SetActive(dec.Project, newConv.ID)
-			m.runWorker(ctx, chatID, text, dec.Project, newConv, s, currentClient)
+			m.runWorker(ctx, chatID, text, dec.Project, "", newConv, s, currentClient)
 			return
 		}
-		m.runWorker(ctx, chatID, text, dec.Project, c, s, currentClient)
+		m.runWorker(ctx, chatID, text, dec.Project, "", c, s, currentClient)
 
 	default:
 		_ = s.Send(chatID, "🤔 라우팅 결과를 이해하지 못했어요. !chat use <id> 로 대화를 지정해 주세요.")
@@ -297,12 +297,16 @@ func (m *Manager) workerModelForBackend() string {
 }
 
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.
-// If history grows too large, it auto-creates a continuation conversation.
-func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project string, c *Conversation, s MessageSender, client ClaudeClient) {
+// workDir overrides the project's path as the Claude CLI working directory (e.g. a git worktree).
+// Pass "" to use the project's registered path.
+func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, workDir string, c *Conversation, s MessageSender, client ClaudeClient) {
 	p, ok := m.store.GetProject(project)
 	if !ok {
 		_ = s.Send(chatID, "⚠️ 프로젝트를 찾을 수 없습니다: "+project)
 		return
+	}
+	if workDir == "" {
+		workDir = p.Path
 	}
 
 	// Check if context is growing too large; auto-create continuation if needed.
@@ -382,7 +386,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 
 	res, err := client.Run(ctx, RunRequest{
 		Prompt:    prompt,
-		WorkDir:   p.Path,
+		WorkDir:   workDir,
 		SessionID: workConv.SessionID,
 		Resume:    workConv.Started,
 		Model:     workerModel,
@@ -419,7 +423,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project str
 			log.Printf("[worker] ▶ retry backend=%s model=%q conv=%s (context overflow)", backend, workerModel, workConv.ID)
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:    retryPrompt,
-				WorkDir:   p.Path,
+				WorkDir:   workDir,
 				SessionID: workConv.SessionID,
 				Resume:    false,
 				Model:     workerModel,
@@ -719,8 +723,21 @@ func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text st
 	c.Backend = currentBackend
 	_ = m.store.UpdateConversation(projectName, c)
 
-	log.Printf("[manager] scheduled task → project=%s conv=%s", projectName, c.ID)
-	m.runWorker(ctx, chatID, text, projectName, c, s, currentClient)
+	// Create a git worktree for isolation: parallel scheduled tasks on the same project
+	// work in separate directories, preventing file-level conflicts.
+	p, _ := m.store.GetProject(projectName)
+	workDir := p.Path
+	wtID := newTaskID()
+	if wtPath, err := CreateWorktree(p.Path, wtID); err != nil {
+		log.Printf("[manager] worktree create failed, falling back to project dir: %v", err)
+	} else if wtPath != "" {
+		workDir = wtPath
+		defer RemoveWorktree(p.Path, wtPath)
+		log.Printf("[manager] worktree created: %s", wtPath)
+	}
+
+	log.Printf("[manager] scheduled task → project=%s conv=%s workDir=%s", projectName, c.ID, workDir)
+	m.runWorker(ctx, chatID, text, projectName, workDir, c, s, currentClient)
 }
 
 // timeNow is a replaceable clock for testing.

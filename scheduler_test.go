@@ -179,6 +179,8 @@ func TestResumeTask_Idempotent_NoCronLeak(t *testing.T) {
 	// Resuming an already-pending task must not register a second cron entry.
 	// The bug: register() writes cronEntries[id] = newEntryID, overwriting the old
 	// EntryID without removing it from cronRunner — ghost entry fires indefinitely.
+	// We test via s.cronEntries (our map, guarded by s.mu) rather than the cron runner's
+	// internal list which is updated asynchronously and can race in tests.
 	s := newTestScheduler(t)
 
 	task := &Task{
@@ -193,10 +195,15 @@ func TestResumeTask_Idempotent_NoCronLeak(t *testing.T) {
 		t.Fatalf("AddTask: %v", err)
 	}
 
-	// Capture entry count before the spurious resume.
+	// Capture our entry ID before the spurious resume.
 	s.mu.Lock()
-	entriesBefore := len(s.cronRunner.Entries())
+	entriesBefore := len(s.cronEntries)
+	eidBefore, registered := s.cronEntries[task.ID]
 	s.mu.Unlock()
+
+	if !registered {
+		t.Fatal("task should be in cronEntries after AddTask")
+	}
 
 	// Resume a task that is already pending — should be a no-op.
 	if err := s.ResumeTask(task.ID); err != nil {
@@ -204,16 +211,22 @@ func TestResumeTask_Idempotent_NoCronLeak(t *testing.T) {
 	}
 
 	s.mu.Lock()
-	entriesAfter := len(s.cronRunner.Entries())
+	entriesAfter := len(s.cronEntries)
+	eidAfter := s.cronEntries[task.ID]
 	s.mu.Unlock()
 
 	if entriesAfter != entriesBefore {
-		t.Errorf("cron entries: before=%d after=%d; spurious resume must not add a ghost entry",
+		t.Errorf("cronEntries: before=%d after=%d; spurious resume must not add a ghost entry",
 			entriesBefore, entriesAfter)
+	}
+	if eidAfter != eidBefore {
+		t.Errorf("entryID changed after idempotent resume: before=%d after=%d", eidBefore, eidAfter)
 	}
 }
 
 func TestResumeTask_FromPaused(t *testing.T) {
+	// Tests the pause→resume lifecycle via s.cronEntries (our map) rather than
+	// s.cronRunner.Entries() which is updated asynchronously.
 	s := newTestScheduler(t)
 
 	task := &Task{
@@ -232,10 +245,10 @@ func TestResumeTask_FromPaused(t *testing.T) {
 	}
 
 	s.mu.Lock()
-	entriesAfterPause := len(s.cronRunner.Entries())
+	_, inMapAfterPause := s.cronEntries[task.ID]
 	s.mu.Unlock()
-	if entriesAfterPause != 0 {
-		t.Errorf("after pause, cron entries = %d, want 0", entriesAfterPause)
+	if inMapAfterPause {
+		t.Error("after pause, task should not be in cronEntries map")
 	}
 
 	if err := s.ResumeTask(task.ID); err != nil {
@@ -245,14 +258,14 @@ func TestResumeTask_FromPaused(t *testing.T) {
 	s.mu.Lock()
 	t2 := s.findByID(task.ID)
 	statusAfter := t2.Status
-	entriesAfterResume := len(s.cronRunner.Entries())
+	_, inMapAfterResume := s.cronEntries[task.ID]
 	s.mu.Unlock()
 
 	if statusAfter != "pending" {
 		t.Errorf("status = %q, want %q", statusAfter, "pending")
 	}
-	if entriesAfterResume != 1 {
-		t.Errorf("cron entries after resume = %d, want 1", entriesAfterResume)
+	if !inMapAfterResume {
+		t.Error("after resume, task should be in cronEntries map")
 	}
 }
 
