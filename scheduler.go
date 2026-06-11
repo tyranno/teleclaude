@@ -221,12 +221,17 @@ func (s *Scheduler) PauseTask(id string) error {
 }
 
 // ResumeTask re-activates a paused task.
+// Idempotent: returns nil if the task is already pending (prevents ghost cron entries
+// from leaking when register() would overwrite cronEntries without removing the old entry).
 func (s *Scheduler) ResumeTask(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.findByID(id)
 	if t == nil {
 		return fmt.Errorf("작업 %q 없음", id)
+	}
+	if t.Status == "pending" {
+		return nil // already active — idempotent
 	}
 	t.Status = "pending"
 	if err := s.register(t); err != nil {

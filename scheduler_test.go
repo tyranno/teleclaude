@@ -175,6 +175,87 @@ func TestUpdateTask_ValidUpdate(t *testing.T) {
 	}
 }
 
+func TestResumeTask_Idempotent_NoCronLeak(t *testing.T) {
+	// Resuming an already-pending task must not register a second cron entry.
+	// The bug: register() writes cronEntries[id] = newEntryID, overwriting the old
+	// EntryID without removing it from cronRunner — ghost entry fires indefinitely.
+	s := newTestScheduler(t)
+
+	task := &Task{
+		ID:       newTaskID(),
+		ChatID:   1,
+		CronExpr: "* * * * *",
+		Prompt:   "ping",
+		Status:   "pending",
+		IsTask:   true,
+	}
+	if err := s.AddTask(task); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+
+	// Capture entry count before the spurious resume.
+	s.mu.Lock()
+	entriesBefore := len(s.cronRunner.Entries())
+	s.mu.Unlock()
+
+	// Resume a task that is already pending — should be a no-op.
+	if err := s.ResumeTask(task.ID); err != nil {
+		t.Fatalf("ResumeTask on pending task: unexpected error: %v", err)
+	}
+
+	s.mu.Lock()
+	entriesAfter := len(s.cronRunner.Entries())
+	s.mu.Unlock()
+
+	if entriesAfter != entriesBefore {
+		t.Errorf("cron entries: before=%d after=%d; spurious resume must not add a ghost entry",
+			entriesBefore, entriesAfter)
+	}
+}
+
+func TestResumeTask_FromPaused(t *testing.T) {
+	s := newTestScheduler(t)
+
+	task := &Task{
+		ID:       newTaskID(),
+		ChatID:   1,
+		CronExpr: "* * * * *",
+		Prompt:   "ping",
+		Status:   "pending",
+		IsTask:   true,
+	}
+	if err := s.AddTask(task); err != nil {
+		t.Fatalf("AddTask: %v", err)
+	}
+	if err := s.PauseTask(task.ID); err != nil {
+		t.Fatalf("PauseTask: %v", err)
+	}
+
+	s.mu.Lock()
+	entriesAfterPause := len(s.cronRunner.Entries())
+	s.mu.Unlock()
+	if entriesAfterPause != 0 {
+		t.Errorf("after pause, cron entries = %d, want 0", entriesAfterPause)
+	}
+
+	if err := s.ResumeTask(task.ID); err != nil {
+		t.Fatalf("ResumeTask: %v", err)
+	}
+
+	s.mu.Lock()
+	t2 := s.findByID(task.ID)
+	statusAfter := t2.Status
+	entriesAfterResume := len(s.cronRunner.Entries())
+	s.mu.Unlock()
+
+	if statusAfter != "pending" {
+		t.Errorf("status = %q, want %q", statusAfter, "pending")
+	}
+	if entriesAfterResume != 1 {
+		t.Errorf("cron entries after resume = %d, want 1", entriesAfterResume)
+	}
+}
+
 func TestDurationToCron(t *testing.T) {
 	cases := []struct {
 		dur  time.Duration
