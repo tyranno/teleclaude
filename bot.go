@@ -180,12 +180,14 @@ func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
 		b.queue = append(b.queue, queuedMsg{chatID: chatID, text: text})
 		b.mu.Unlock()
 		log.Printf("[scheduler] 예약 작업 대기열 추가 — Worker 완료 후 실행됩니다.")
+		_ = b.Send(chatID, "📋 예약 작업이 대기열에 추가됨 — 현재 작업이 끝나면 실행됩니다.\n  "+truncate(text, 60))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(b.cfg.TimeoutMinutes)*time.Minute)
 	b.busy = true
 	b.cancelCurrent = cancel
 	b.mu.Unlock()
+	_ = b.Send(chatID, "⏰ 예약 작업 실행 중: "+truncate(text, 60))
 
 	go func() {
 		defer func() {
@@ -328,7 +330,7 @@ func (b *Bot) formatProjectList() string {
 		if name == active.Project {
 			marker = " ⭐"
 		}
-		sb.WriteString(fmt.Sprintf("\n• %s%s\n  %s\n", name, marker, p.Path))
+		fmt.Fprintf(&sb, "\n• %s%s\n  %s\n", name, marker, p.Path)
 		if len(p.Conversations) == 0 {
 			sb.WriteString("  (대화 없음)\n")
 		}
@@ -338,7 +340,7 @@ func (b *Bot) formatProjectList() string {
 			if name == active.Project && id == active.ConversationID {
 				cm = " ⭐"
 			}
-			sb.WriteString(fmt.Sprintf("  [%s] %s%s\n", id, c.Title, cm))
+			fmt.Fprintf(&sb, "  [%s] %s%s\n", id, c.Title, cm)
 		}
 	}
 	return sb.String()
@@ -397,7 +399,7 @@ func (b *Bot) formatChatList(project string) string {
 	}
 	active := b.store.GetActive()
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("💬 %s 대화 목록\n", project))
+	fmt.Fprintf(&sb, "💬 %s 대화 목록\n", project)
 	for _, id := range sortedConvIDs(p.Conversations) {
 		c := p.Conversations[id]
 		cm := ""
@@ -492,7 +494,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 //	!remind 2h task 서버 확인해줘   — 2시간 후 Claude 작업
 //	!remind list                    — 대기 중 목록
 //	!remind cancel <id>             — 취소
-func (b *Bot) handleRemind(chatID int64, text string, fields []string) {
+func (b *Bot) handleRemind(chatID int64, _ string, fields []string) {
 	if len(fields) < 2 {
 		_ = b.Send(chatID, "사용법: !remind <시간> [task] <메시지>  |  !remind list  |  !remind cancel <id>\n시간 예) 30m, 2h, 1d — 단위: m(분) h(시간) d(일)\n예) !remind 30m 배포 확인, !remind 2h task 서버 상태 확인해줘")
 		return
@@ -507,8 +509,14 @@ func (b *Bot) handleRemind(chatID int64, text string, fields []string) {
 		var sb strings.Builder
 		sb.WriteString("⏰ 대기 중인 알림:\n")
 		for _, r := range reminders {
-			remaining := time.Until(r.FireAt).Round(time.Second)
-			fmt.Fprintf(&sb, "[%s] %s 후 — %s\n", r.ID, remaining, r.Prompt)
+			remaining := time.Until(r.FireAt)
+			var timeStr string
+			if remaining < 0 {
+				timeStr = "즉시 실행 예정"
+			} else {
+				timeStr = remaining.Round(time.Second).String() + " 후"
+			}
+			fmt.Fprintf(&sb, "[%s] %s — %s\n", r.ID, timeStr, r.Prompt)
 		}
 		_ = b.Send(chatID, sb.String())
 	case "cancel":
@@ -568,7 +576,7 @@ func (b *Bot) handleRemind(chatID int64, text string, fields []string) {
 //	!cron add <schedule> task <프롬프트>   — 반복 Claude 작업
 //	!cron list                             — 목록
 //	!cron remove <id>                      — 제거
-func (b *Bot) handleCron(chatID int64, text string, fields []string) {
+func (b *Bot) handleCron(chatID int64, _ string, fields []string) {
 	if len(fields) < 2 {
 		_ = b.Send(chatID, "사용법: !cron add <주기> [task] <내용>  |  !cron list  |  !cron remove <id>\n주기 예) 30m, 2h, 1d, 1w, 매시간, 매일, 매주\n예) !cron add 1h 서버 상태 확인, !cron add 매일 task 오늘의 작업 요약해줘")
 		return
@@ -587,8 +595,19 @@ func (b *Bot) handleCron(chatID int64, text string, fields []string) {
 			if c.IsTask {
 				kind = "작업"
 			}
-			next := time.Until(b.scheduler.NextFire(c.ID)).Round(time.Second)
-			fmt.Fprintf(&sb, "[%s] %s (%s) — 다음: %s 후\n  %s\n", c.ID, c.Label, kind, next, c.Prompt)
+			nextAt := b.scheduler.NextFire(c.ID)
+			var nextStr string
+			if nextAt.IsZero() {
+				nextStr = "계산 중..."
+			} else {
+				remaining := time.Until(nextAt)
+				if remaining < 0 {
+					nextStr = "즉시 실행 예정"
+				} else {
+					nextStr = remaining.Round(time.Second).String() + " 후"
+				}
+			}
+			fmt.Fprintf(&sb, "[%s] %s (%s) — 다음: %s\n  %s\n", c.ID, c.Label, kind, nextStr, c.Prompt)
 		}
 		_ = b.Send(chatID, sb.String())
 	case "remove":
@@ -679,9 +698,19 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			next := b.scheduler.NextFire(t.ID)
 			nextStr := ""
 			if !next.IsZero() {
-				nextStr = fmt.Sprintf(" → %s 후", time.Until(next).Round(time.Second))
+				remaining := time.Until(next)
+				if remaining < 0 {
+					nextStr = " → 즉시 실행 예정"
+				} else {
+					nextStr = fmt.Sprintf(" → %s 후", remaining.Round(time.Second))
+				}
 			} else if t.Status == "pending" && !t.FireAt.IsZero() {
-				nextStr = fmt.Sprintf(" → %s 후", time.Until(t.FireAt).Round(time.Second))
+				remaining := time.Until(t.FireAt)
+				if remaining < 0 {
+					nextStr = " → 즉시 실행 예정"
+				} else {
+					nextStr = fmt.Sprintf(" → %s 후", remaining.Round(time.Second))
+				}
 			}
 			scriptMark := ""
 			if t.Script != "" {
