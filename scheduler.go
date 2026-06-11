@@ -492,15 +492,16 @@ func runScriptPrecheck(script string) (wakeAgent bool, data map[string]any) {
 
 // --- ParseSchedule (backward compat for !remind / !cron duration parsing) ---
 
-// ParseSchedule parses "30m", "2h", "1d", "hourly", "daily", "weekly".
+// ParseSchedule parses duration strings: English ("30m", "2h", "1d", "1w", "hourly", "daily", "weekly")
+// and Korean aliases ("매시간", "매일", "매주").
 func ParseSchedule(raw string) (time.Duration, string, error) {
 	raw = strings.TrimSpace(strings.ToLower(raw))
 	switch raw {
-	case "hourly":
+	case "hourly", "매시간":
 		return time.Hour, "매시간", nil
-	case "daily":
+	case "daily", "매일":
 		return 24 * time.Hour, "매일", nil
-	case "weekly":
+	case "weekly", "매주":
 		return 7 * 24 * time.Hour, "매주", nil
 	}
 	if len(raw) < 2 {
@@ -518,8 +519,10 @@ func ParseSchedule(raw string) (time.Duration, string, error) {
 		return time.Duration(n) * time.Hour, fmt.Sprintf("%d시간마다", n), nil
 	case 'd':
 		return time.Duration(n) * 24 * time.Hour, fmt.Sprintf("%d일마다", n), nil
+	case 'w':
+		return time.Duration(n) * 7 * 24 * time.Hour, fmt.Sprintf("%d주마다", n), nil
 	}
-	return 0, "", fmt.Errorf("알 수 없는 단위 '%c' — m/h/d/hourly/daily/weekly 사용", unit)
+	return 0, "", fmt.Errorf("알 수 없는 단위 '%c' — m/h/d/w/hourly/daily/weekly/매시간/매일/매주 사용", unit)
 }
 
 // --- Helpers ---

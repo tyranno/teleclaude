@@ -78,14 +78,29 @@ func (m *Manager) CodexAvailable() bool {
 	return m.codexClient != nil
 }
 
-// detectBackendSwitchIntent checks if the message explicitly mentions switching the AI backend.
-// Returns "codex" or "claude" if detected, "" otherwise.
+// detectBackendSwitchIntent checks if the message explicitly intends to switch the AI backend.
+// Requires an explicit switch verb to avoid false positives when messages merely mention
+// "codex" or "backend" in a non-switching context.
+// Returns "codex" or "claude" if switching intent is detected, "" otherwise.
 func detectBackendSwitchIntent(text string) string {
 	lower := strings.ToLower(text)
-	if strings.Contains(lower, "codex") && (strings.Contains(lower, "backend") || strings.Contains(lower, "백엔드")) {
+	switchVerbs := []string{
+		"전환", "바꿔", "변경", "switch", "써줘", "사용해줘", "사용해", "써", "바꿔줘", "전환해",
+	}
+	hasSwitchVerb := false
+	for _, v := range switchVerbs {
+		if strings.Contains(lower, v) {
+			hasSwitchVerb = true
+			break
+		}
+	}
+	if !hasSwitchVerb {
+		return ""
+	}
+	if strings.Contains(lower, "codex") {
 		return "codex"
 	}
-	if strings.Contains(lower, "claude") && (strings.Contains(lower, "backend") || strings.Contains(lower, "백엔드")) {
+	if strings.Contains(lower, "claude") {
 		return "claude"
 	}
 	return ""
