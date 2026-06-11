@@ -21,6 +21,9 @@ type Config struct {
 	CodexManagerModel string // routing model (fast/cheap) — "" = same as CodexModel
 	DefaultBackend    string // "claude" | "codex" — "" = "claude"
 	MaxWorkers        int    // max concurrent Worker goroutines, default 3
+	RateLimitPerMin   int    // max user messages per minute, 0 = unlimited, default 20
+	AllowScripts      bool   // permit --script in !task add/update, default false
+	AllowedScriptCommands []string // whitelist of allowed script first-tokens; empty = any
 }
 
 // ConversationTurn represents one exchange in a conversation.

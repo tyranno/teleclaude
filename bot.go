@@ -28,28 +28,30 @@ type queuedMsg struct {
 // Bot dispatches Telegram messages to concurrent Workers.
 // Up to cfg.MaxWorkers (default 3) can run at the same time; extras are queued.
 type Bot struct {
-	api       *tgbotapi.BotAPI
-	cfg       *Config
-	store     StoreRepo
-	manager   *Manager
-	scheduler *Scheduler
-	onReady   func() // called once after GetUpdatesChan starts (handoff signal)
+	api         *tgbotapi.BotAPI
+	cfg         *Config
+	store       StoreRepo
+	manager     *Manager
+	scheduler   *Scheduler
+	rateLimiter *RateLimiter
+	onReady     func() // called once after GetUpdatesChan starts (handoff signal)
 
 	mu          sync.Mutex
-	activeCount int                       // current running workers
-	workerSeq   int                       // monotonic counter for worker IDs
+	activeCount int                        // current running workers
+	workerSeq   int                        // monotonic counter for worker IDs
 	cancels     map[int]context.CancelFunc // workerID → cancel (for !cancel)
 	queue       []queuedMsg               // messages waiting for a free slot
 }
 
 func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager, scheduler *Scheduler) *Bot {
 	return &Bot{
-		api:       api,
-		cfg:       cfg,
-		store:     store,
-		manager:   manager,
-		scheduler: scheduler,
-		cancels:   make(map[int]context.CancelFunc),
+		api:         api,
+		cfg:         cfg,
+		store:       store,
+		manager:     manager,
+		scheduler:   scheduler,
+		rateLimiter: NewRateLimiter(cfg.RateLimitPerMin),
+		cancels:     make(map[int]context.CancelFunc),
 	}
 }
 
@@ -120,6 +122,12 @@ func (b *Bot) Run() {
 
 			text := strings.TrimSpace(update.Message.Text)
 			if text == "" {
+				continue
+			}
+			// Rate-limit free-text messages only (commands are cheap, workers are expensive).
+			if !strings.HasPrefix(text, "!") && !b.rateLimiter.Allow(userID) {
+				_ = b.Send(chatID, "⚠️ 요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.")
+				log.Printf("[bot] rate-limited user %d", userID)
 				continue
 			}
 			if strings.HasPrefix(text, "!") {
@@ -776,6 +784,12 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			_ = b.Send(chatID, "⚠️ 변경할 항목을 지정하세요.\n사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>]")
 			return
 		}
+		if script != "" {
+			if verr := validateScript(b.cfg, script); verr != nil {
+				_ = b.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
+				return
+			}
+		}
 		if err := b.scheduler.UpdateTask(id, cronExpr, prompt, script); err != nil {
 			_ = b.Send(chatID, "⚠️ "+err.Error())
 		} else {
@@ -823,6 +837,12 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 		if err != nil {
 			_ = b.Send(chatID, "⚠️ "+err.Error())
 			return
+		}
+		if script != "" {
+			if verr := validateScript(b.cfg, script); verr != nil {
+				_ = b.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
+				return
+			}
 		}
 		kind := "알림"
 		if isTask {

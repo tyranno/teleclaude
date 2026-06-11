@@ -44,10 +44,12 @@ func LoadConfig(path string) (*Config, error) {
 	defer f.Close()
 
 	cfg := &Config{
-		ManagerModel:   "haiku",
-		TimeoutMinutes: 10,
-		ManagerAlways:  true,
-		MaxWorkers:     3,
+		ManagerModel:    "haiku",
+		TimeoutMinutes:  10,
+		ManagerAlways:   true,
+		MaxWorkers:      3,
+		RateLimitPerMin: 20,
+		AllowScripts:    false,
 	}
 
 	sc := bufio.NewScanner(f)
@@ -118,6 +120,22 @@ func applyConfigKV(cfg *Config, key, val string) error {
 				return fmt.Errorf("MAX_WORKERS는 양의 정수여야 합니다: %q", val)
 			}
 			cfg.MaxWorkers = n
+		}
+	case "RATE_LIMIT_PER_MIN":
+		if val != "" {
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				return fmt.Errorf("RATE_LIMIT_PER_MIN는 0 이상 정수여야 합니다: %q", val)
+			}
+			cfg.RateLimitPerMin = n
+		}
+	case "ALLOW_SCRIPTS":
+		cfg.AllowScripts = parseBool(val, false)
+	case "ALLOWED_SCRIPT_COMMANDS":
+		for _, cmd := range strings.Split(val, ",") {
+			if c := strings.TrimSpace(cmd); c != "" {
+				cfg.AllowedScriptCommands = append(cfg.AllowedScriptCommands, c)
+			}
 		}
 	}
 	return nil
