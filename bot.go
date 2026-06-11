@@ -283,6 +283,8 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		b.handleBackend(chatID, fields)
 	case "!user":
 		b.handleUser(chatID, fields)
+	case "!parallel":
+		b.handleParallel(chatID, text)
 	default:
 		_ = b.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
 	}
@@ -785,15 +787,15 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 		}
 
 	case "update":
-		// !task update <id> [--cron <expr>] [--prompt <text>] [--script <script>]
+		// !task update <id> [--cron <expr>] [--prompt <text>] [--script <script>] [--depends-on <id,...>]
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>]")
+			_ = b.Send(chatID, "사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>] [--depends-on <id,...>]")
 			return
 		}
 		id := fields[2]
-		cronExpr, prompt, script := parseFlags(fields[3:], "--cron", "--prompt", "--script")
-		if cronExpr == "" && prompt == "" && script == "" {
-			_ = b.Send(chatID, "⚠️ 변경할 항목을 지정하세요.\n사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>]")
+		cronExpr, prompt, script, depsRaw := parseFlags4(fields[3:], "--cron", "--prompt", "--script", "--depends-on")
+		if cronExpr == "" && prompt == "" && script == "" && depsRaw == "" {
+			_ = b.Send(chatID, "⚠️ 변경할 항목을 지정하세요.\n사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>] [--depends-on <id,...>]")
 			return
 		}
 		if script != "" {
@@ -802,7 +804,11 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 				return
 			}
 		}
-		if err := b.scheduler.UpdateTask(id, cronExpr, prompt, script); err != nil {
+		var deps []string
+		if depsRaw != "" {
+			deps = parseDependsOn(depsRaw)
+		}
+		if err := b.scheduler.UpdateTask(id, cronExpr, prompt, script, deps); err != nil {
 			_ = b.Send(chatID, "⚠️ "+err.Error())
 		} else {
 			_ = b.Send(chatID, "✅ 작업 업데이트됨: "+id)
@@ -845,7 +851,7 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			_ = b.Send(chatID, "사용법: !task add <주기> [task] <프롬프트>\n주기: 30m, 2h, 1d, 1w, 매시간, 매일, 매주, 또는 5-field cron\n예) !task add 매일 task 오늘 요약해줘\n    !task add 0 9 * * 1-5 task 주식 확인")
 			return
 		}
-		cronExpr, script, isTask, prompt, err := parseTaskAddArgs(fields[2:])
+		cronExpr, script, dependsOn, isTask, prompt, err := parseTaskAddArgs(fields[2:])
 		if err != nil {
 			_ = b.Send(chatID, "⚠️ "+err.Error())
 			return
@@ -866,6 +872,7 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			Prompt:    prompt,
 			Script:    script,
 			CronExpr:  cronExpr,
+			DependsOn: dependsOn,
 			Status:    "pending",
 			IsTask:    isTask,
 			Label:     truncate(prompt, 30),
@@ -888,30 +895,37 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 }
 
 // parseTaskAddArgs parses fields after "!task add".
-// Returns (cronExpr, script, isTask, prompt, error).
-// Supports: 5-field cron tokens, duration shorthand, --script flag, task keyword.
-func parseTaskAddArgs(args []string) (cronExpr, script string, isTask bool, prompt string, err error) {
+// Returns (cronExpr, script, dependsOn, isTask, prompt, error).
+// Supports: 5-field cron tokens, duration shorthand, --script, --depends-on flags, task keyword.
+func parseTaskAddArgs(args []string) (cronExpr, script string, dependsOn []string, isTask bool, prompt string, err error) {
 	if len(args) == 0 {
-		return "", "", false, "", fmt.Errorf("인수가 부족합니다")
+		return "", "", nil, false, "", fmt.Errorf("인수가 부족합니다")
 	}
 
-	// Extract --script flag from args before parsing cron/prompt
+	// Extract --script and --depends-on flags from args before parsing cron/prompt
 	var rest []string
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--script" {
+		switch args[i] {
+		case "--script":
 			if i+1 >= len(args) {
-				return "", "", false, "", fmt.Errorf("--script 플래그에 값이 필요합니다")
+				return "", "", nil, false, "", fmt.Errorf("--script 플래그에 값이 필요합니다")
 			}
 			script = args[i+1]
 			i++
-		} else {
+		case "--depends-on":
+			if i+1 >= len(args) {
+				return "", "", nil, false, "", fmt.Errorf("--depends-on 플래그에 값이 필요합니다")
+			}
+			dependsOn = parseDependsOn(args[i+1])
+			i++
+		default:
 			rest = append(rest, args[i])
 		}
 	}
 	args = rest
 
 	if len(args) == 0 {
-		return "", "", false, "", fmt.Errorf("cron 식 또는 주기를 입력하세요")
+		return "", "", nil, false, "", fmt.Errorf("cron 식 또는 주기를 입력하세요")
 	}
 
 	// Determine cron expression
@@ -927,7 +941,7 @@ func parseTaskAddArgs(args []string) (cronExpr, script string, isTask bool, prom
 		// Duration shorthand: 30m, 2h, daily, etc.
 		dur, _, pErr := ParseSchedule(args[0])
 		if pErr != nil {
-			return "", "", false, "", fmt.Errorf("주기 형식 오류 (%q): %v\n예) 30m, 2h, daily, 또는 5-field cron (0 9 * * 1-5)", args[0], pErr)
+			return "", "", nil, false, "", fmt.Errorf("주기 형식 오류 (%q): %v\n예) 30m, 2h, daily, 또는 5-field cron (0 9 * * 1-5)", args[0], pErr)
 		}
 		cronExpr = durationToCron(dur)
 		cronEnd = 1
@@ -935,7 +949,7 @@ func parseTaskAddArgs(args []string) (cronExpr, script string, isTask bool, prom
 
 	remaining := args[cronEnd:]
 	if len(remaining) == 0 {
-		return "", "", false, "", fmt.Errorf("프롬프트가 없습니다")
+		return "", "", nil, false, "", fmt.Errorf("프롬프트가 없습니다")
 	}
 
 	// Optional "task" keyword
@@ -945,10 +959,10 @@ func parseTaskAddArgs(args []string) (cronExpr, script string, isTask bool, prom
 	}
 
 	if len(remaining) == 0 {
-		return "", "", false, "", fmt.Errorf("프롬프트가 없습니다")
+		return "", "", nil, false, "", fmt.Errorf("프롬프트가 없습니다")
 	}
 	prompt = strings.Join(remaining, " ")
-	return cronExpr, script, isTask, prompt, nil
+	return cronExpr, script, dependsOn, isTask, prompt, nil
 }
 
 // allCronFields returns true if all 5 tokens look like valid cron expression fields.
@@ -995,6 +1009,43 @@ func parseOnceDatetime(tokens []string) (time.Time, int, error) {
 		}
 	}
 	return time.Time{}, 0, fmt.Errorf("%q — HH:MM 또는 YYYY-MM-DD HH:MM 형식으로 입력하세요", tokens[0])
+}
+
+// parseFlags4 extracts up to 4 named flag values from tokens.
+func parseFlags4(tokens []string, flag1, flag2, flag3, flag4 string) (v1, v2, v3, v4 string) {
+	known := map[string]*string{flag1: &v1, flag2: &v2, flag3: &v3, flag4: &v4}
+	i := 0
+	for i < len(tokens) {
+		dest, ok := known[tokens[i]]
+		if !ok {
+			i++
+			continue
+		}
+		i++
+		var parts []string
+		for i < len(tokens) {
+			if _, isFlag := known[tokens[i]]; isFlag {
+				break
+			}
+			parts = append(parts, tokens[i])
+			i++
+		}
+		if len(parts) > 0 {
+			*dest = strings.Join(parts, " ")
+		}
+	}
+	return
+}
+
+// parseDependsOn splits a comma-separated list of task IDs.
+func parseDependsOn(raw string) []string {
+	var out []string
+	for _, id := range strings.Split(raw, ",") {
+		if id := strings.TrimSpace(id); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // parseFlags extracts up to 3 named flag values from tokens.
@@ -1301,6 +1352,36 @@ func (b *Bot) handleBackend(chatID int64, fields []string) {
 	_ = b.Send(chatID, fmt.Sprintf("✅ 백엔드 전환됨: %s → %s", strings.ToUpper(current), strings.ToUpper(target)))
 }
 
+// handleParallel dispatches multiple independent prompts concurrently.
+// Syntax: !parallel <prompt1> | <prompt2> | ...
+// Each |-separated prompt becomes its own worker; responses arrive independently.
+func (b *Bot) handleParallel(chatID int64, text string) {
+	rest := strings.TrimSpace(strings.TrimPrefix(text, "!parallel"))
+	if rest == "" {
+		_ = b.Send(chatID, "사용법: !parallel <프롬프트1> | <프롬프트2> | ...\n예) !parallel 테스트 작성해줘 | 문서 업데이트해줘")
+		return
+	}
+	parts := strings.Split(rest, "|")
+	var prompts []string
+	for _, p := range parts {
+		if p := strings.TrimSpace(p); p != "" {
+			prompts = append(prompts, p)
+		}
+	}
+	if len(prompts) == 0 {
+		_ = b.Send(chatID, "⚠️ 유효한 프롬프트가 없습니다.")
+		return
+	}
+	if len(prompts) == 1 {
+		b.dispatchText(chatID, prompts[0])
+		return
+	}
+	_ = b.Send(chatID, fmt.Sprintf("🔀 %d개 병렬 작업 시작합니다...", len(prompts)))
+	for _, p := range prompts {
+		b.dispatchText(chatID, p)
+	}
+}
+
 // handleUser manages the runtime allow-list: !user add <id> | remove <id> | list
 func (b *Bot) handleUser(chatID int64, fields []string) {
 	if b.userStore == nil {
@@ -1395,13 +1476,17 @@ func helpText() string {
 !status                      실행 중 작업 + 활성 대화 + 백엔드
 !cancel                      진행 중 작업 취소
 
+병렬 작업:
+!parallel <p1> | <p2> | ...  여러 프롬프트를 동시에 Claude에 전달
+
 스케줄 (통합):
 !task add <주기|cron> [task] <내용>         반복 작업/알림 등록
   주기: 30m 2h 1d 1w 매시간 매일 매주
+  --depends-on <id,...>   다른 작업 완료 후 실행 (DAG)
 !task once <HH:MM|YYYY-MM-DD HH:MM> <내용>  일회성 알림
 !task list [pending|paused|all]             목록
 !task pause|resume|cancel <id>              관리
-!task update <id> --cron|--prompt|--script <값>
+!task update <id> --cron|--prompt|--script|--depends-on <값>
 !task help                                  상세 도움말
 
 히스토리:

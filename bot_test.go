@@ -200,7 +200,7 @@ func TestBuildContextPrompt_MemoryNote(t *testing.T) {
 // --- parseTaskAddArgs ---
 
 func TestParseTaskAddArgs_FivefieldCron(t *testing.T) {
-	cronExpr, script, isTask, prompt, err := parseTaskAddArgs(
+	cronExpr, script, _, isTask, prompt, err := parseTaskAddArgs(
 		[]string{"0", "9", "*", "*", "1-5", "task", "daily standup"},
 	)
 	if err != nil {
@@ -221,7 +221,7 @@ func TestParseTaskAddArgs_FivefieldCron(t *testing.T) {
 }
 
 func TestParseTaskAddArgs_DurationShorthand(t *testing.T) {
-	cronExpr, _, isTask, prompt, err := parseTaskAddArgs(
+	cronExpr, _, _, isTask, prompt, err := parseTaskAddArgs(
 		[]string{"30m", "배포 확인"},
 	)
 	if err != nil {
@@ -240,7 +240,7 @@ func TestParseTaskAddArgs_DurationShorthand(t *testing.T) {
 }
 
 func TestParseTaskAddArgs_KoreanDuration(t *testing.T) {
-	cronExpr, _, isTask, prompt, err := parseTaskAddArgs(
+	cronExpr, _, _, isTask, prompt, err := parseTaskAddArgs(
 		[]string{"매시간", "task", "서버 확인"},
 	)
 	if err != nil {
@@ -258,7 +258,7 @@ func TestParseTaskAddArgs_KoreanDuration(t *testing.T) {
 }
 
 func TestParseTaskAddArgs_AtEvery(t *testing.T) {
-	cronExpr, _, isTask, prompt, err := parseTaskAddArgs(
+	cronExpr, _, _, isTask, prompt, err := parseTaskAddArgs(
 		[]string{"@every", "30m", "알림"},
 	)
 	if err != nil {
@@ -276,7 +276,7 @@ func TestParseTaskAddArgs_AtEvery(t *testing.T) {
 }
 
 func TestParseTaskAddArgs_ScriptFlag(t *testing.T) {
-	cronExpr, script, isTask, prompt, err := parseTaskAddArgs(
+	cronExpr, script, _, isTask, prompt, err := parseTaskAddArgs(
 		[]string{"1h", "--script", "echo ok", "task", "do work"},
 	)
 	if err != nil {
@@ -297,26 +297,26 @@ func TestParseTaskAddArgs_ScriptFlag(t *testing.T) {
 }
 
 func TestParseTaskAddArgs_ErrorNoArgs(t *testing.T) {
-	if _, _, _, _, err := parseTaskAddArgs(nil); err == nil {
+	if _, _, _, _, _, err := parseTaskAddArgs(nil); err == nil {
 		t.Error("expected error for empty args")
 	}
 }
 
 func TestParseTaskAddArgs_ErrorNoPrompt(t *testing.T) {
 	// Valid schedule but no prompt text.
-	if _, _, _, _, err := parseTaskAddArgs([]string{"30m"}); err == nil {
+	if _, _, _, _, _, err := parseTaskAddArgs([]string{"30m"}); err == nil {
 		t.Error("expected error when no prompt provided")
 	}
 }
 
 func TestParseTaskAddArgs_ErrorMissingScriptValue(t *testing.T) {
-	if _, _, _, _, err := parseTaskAddArgs([]string{"30m", "--script"}); err == nil {
+	if _, _, _, _, _, err := parseTaskAddArgs([]string{"30m", "--script"}); err == nil {
 		t.Error("expected error when --script has no value")
 	}
 }
 
 func TestParseTaskAddArgs_ErrorInvalidSchedule(t *testing.T) {
-	if _, _, _, _, err := parseTaskAddArgs([]string{"notvalid", "hello"}); err == nil {
+	if _, _, _, _, _, err := parseTaskAddArgs([]string{"notvalid", "hello"}); err == nil {
 		t.Error("expected error for invalid schedule string")
 	}
 }

@@ -113,14 +113,15 @@ type Task struct {
 	ID        string    `json:"id"`
 	ChatID    int64     `json:"chatId"`
 	Prompt    string    `json:"prompt"`
-	Script    string    `json:"script,omitempty"`   // bash pre-check; empty = skip
-	CronExpr  string    `json:"cronExpr,omitempty"` // standard 5-field cron
-	FireAt    time.Time `json:"fireAt,omitempty"`   // one-shot: when to fire
+	Script    string    `json:"script,omitempty"`     // bash pre-check; empty = skip
+	CronExpr  string    `json:"cronExpr,omitempty"`   // standard 5-field cron
+	FireAt    time.Time `json:"fireAt,omitempty"`     // one-shot: when to fire
 	Status    string    `json:"status"`
-	IsTask    bool      `json:"isTask"` // true = Claude Worker, false = notify
+	IsTask    bool      `json:"isTask"`               // true = Claude Worker, false = notify
 	Label     string    `json:"label"`
 	CreatedAt time.Time `json:"createdAt"`
 	LastFired time.Time `json:"lastFired,omitempty"`
+	DependsOn []string  `json:"dependsOn,omitempty"` // task IDs that must complete before this fires
 }
 
 // Action constants.

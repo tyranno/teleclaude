@@ -159,11 +159,37 @@ func (s *Scheduler) deregister(id string) {
 	}
 }
 
+// depsMetLocked reports whether all DependsOn tasks have completed.
+// A dependency is "done" when it is absent from the task list (removed after
+// one-shot fire) or has Status "cancelled". Lock must be held by caller.
+func (s *Scheduler) depsMetLocked(t *Task) bool {
+	for _, depID := range t.DependsOn {
+		dep := s.findByID(depID)
+		if dep != nil && (dep.Status == "pending" || dep.Status == "paused") {
+			return false
+		}
+	}
+	return true
+}
+
 // fire executes a task's action (called by cron tick or one-shot goroutine).
 func (s *Scheduler) fire(taskID string) {
 	s.mu.Lock()
 	t := s.findByID(taskID)
 	if t == nil || t.Status != "pending" {
+		s.mu.Unlock()
+		return
+	}
+	// DAG: skip if any dependency is still active.
+	if len(t.DependsOn) > 0 && !s.depsMetLocked(t) {
+		log.Printf("[scheduler] task %s: dependencies not met — deferring 1m", taskID)
+		if t.CronExpr == "" && !t.FireAt.IsZero() {
+			// One-shot: reschedule 1 minute later.
+			s.deregister(taskID)
+			t.FireAt = time.Now().Add(time.Minute)
+			_ = s.register(t)
+			_ = s.save()
+		}
 		s.mu.Unlock()
 		return
 	}
@@ -255,8 +281,8 @@ func (s *Scheduler) CancelTask(id string) error {
 }
 
 // UpdateTask updates mutable fields on an active or paused task.
-// Pass empty string to leave a field unchanged.
-func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string) error {
+// Pass empty string / nil to leave a field unchanged.
+func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string, dependsOn []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.findByID(id)
@@ -264,8 +290,8 @@ func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string) error {
 		return fmt.Errorf("작업 %q 없음", id)
 	}
 	wasActive := t.Status == "pending"
-	// Snapshot old values so we can roll back if register() fails.
-	oldCronExpr, oldPrompt, oldScript := t.CronExpr, t.Prompt, t.Script
+	// Snapshot old values for rollback on register failure.
+	oldCronExpr, oldPrompt, oldScript, oldDeps := t.CronExpr, t.Prompt, t.Script, t.DependsOn
 	if wasActive {
 		s.deregister(id)
 	}
@@ -278,11 +304,13 @@ func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string) error {
 	if script != "" {
 		t.Script = script
 	}
+	if dependsOn != nil {
+		t.DependsOn = dependsOn
+	}
 	if wasActive {
 		if err := s.register(t); err != nil {
-			// Roll back mutations so the task remains consistent.
-			t.CronExpr, t.Prompt, t.Script = oldCronExpr, oldPrompt, oldScript
-			t.Status = "paused" // can't re-register → mark paused to avoid phantom "pending"
+			t.CronExpr, t.Prompt, t.Script, t.DependsOn = oldCronExpr, oldPrompt, oldScript, oldDeps
+			t.Status = "paused"
 			_ = s.save()
 			return err
 		}

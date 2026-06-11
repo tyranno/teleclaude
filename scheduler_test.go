@@ -114,7 +114,7 @@ func TestUpdateTask_InvalidCronRollback(t *testing.T) {
 	}
 
 	// Attempt to update with an invalid cron expression.
-	err := s.UpdateTask(task.ID, "not-a-valid-cron", "", "")
+	err := s.UpdateTask(task.ID, "not-a-valid-cron", "", "", nil)
 	if err == nil {
 		t.Fatal("UpdateTask with invalid cron: expected error, got nil")
 	}
@@ -153,7 +153,7 @@ func TestUpdateTask_ValidUpdate(t *testing.T) {
 		t.Fatalf("AddTask: %v", err)
 	}
 
-	if err := s.UpdateTask(task.ID, "0 * * * *", "new prompt", ""); err != nil {
+	if err := s.UpdateTask(task.ID, "0 * * * *", "new prompt", "", nil); err != nil {
 		t.Fatalf("UpdateTask: unexpected error: %v", err)
 	}
 
