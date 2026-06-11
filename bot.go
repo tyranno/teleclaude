@@ -732,6 +732,10 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 		}
 		id := fields[2]
 		cronExpr, prompt, script := parseFlags(fields[3:], "--cron", "--prompt", "--script")
+		if cronExpr == "" && prompt == "" && script == "" {
+			_ = b.Send(chatID, "⚠️ 변경할 항목을 지정하세요.\n사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>]")
+			return
+		}
 		if err := b.scheduler.UpdateTask(id, cronExpr, prompt, script); err != nil {
 			_ = b.Send(chatID, "⚠️ "+err.Error())
 		} else {
@@ -915,19 +919,28 @@ func parseOnceDatetime(tokens []string) (time.Time, int, error) {
 }
 
 // parseFlags extracts up to 3 named flag values from tokens.
-// Each flag is "--name value". Returns values for flag1, flag2, flag3.
+// A flag's value spans from the flag to the next recognized flag (or end of tokens),
+// so "--cron 0 9 * * 1-5 --prompt foo" correctly captures "0 9 * * 1-5" as the cron value.
 func parseFlags(tokens []string, flag1, flag2, flag3 string) (v1, v2, v3 string) {
-	for i := 0; i < len(tokens)-1; i++ {
-		switch tokens[i] {
-		case flag1:
-			v1 = tokens[i+1]
+	known := map[string]*string{flag1: &v1, flag2: &v2, flag3: &v3}
+	i := 0
+	for i < len(tokens) {
+		dest, ok := known[tokens[i]]
+		if !ok {
 			i++
-		case flag2:
-			v2 = tokens[i+1]
+			continue
+		}
+		i++
+		var parts []string
+		for i < len(tokens) {
+			if _, isFlag := known[tokens[i]]; isFlag {
+				break
+			}
+			parts = append(parts, tokens[i])
 			i++
-		case flag3:
-			v3 = tokens[i+1]
-			i++
+		}
+		if len(parts) > 0 {
+			*dest = strings.Join(parts, " ")
 		}
 	}
 	return

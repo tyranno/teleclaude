@@ -85,3 +85,41 @@ func TestSendChunked_Multi(t *testing.T) {
 		t.Errorf("expected 2 messages, got %d", len(f.sent))
 	}
 }
+
+func TestParseFlags_MultiTokenValues(t *testing.T) {
+	tokens := strings.Fields("--cron 0 9 * * 1-5 --prompt 안녕하세요 세상 --script echo ok")
+	cron, prompt, script := parseFlags(tokens, "--cron", "--prompt", "--script")
+	if cron != "0 9 * * 1-5" {
+		t.Errorf("cron = %q, want %q", cron, "0 9 * * 1-5")
+	}
+	if prompt != "안녕하세요 세상" {
+		t.Errorf("prompt = %q, want %q", prompt, "안녕하세요 세상")
+	}
+	if script != "echo ok" {
+		t.Errorf("script = %q, want %q", script, "echo ok")
+	}
+}
+
+func TestParseFlags_SingleToken(t *testing.T) {
+	tokens := strings.Fields("--prompt hello")
+	_, prompt, _ := parseFlags(tokens, "--cron", "--prompt", "--script")
+	if prompt != "hello" {
+		t.Errorf("prompt = %q, want %q", prompt, "hello")
+	}
+}
+
+func TestParseFlags_Empty(t *testing.T) {
+	cron, prompt, script := parseFlags(nil, "--cron", "--prompt", "--script")
+	if cron != "" || prompt != "" || script != "" {
+		t.Errorf("expected all empty, got cron=%q prompt=%q script=%q", cron, prompt, script)
+	}
+}
+
+func TestParseFlags_MissingValue(t *testing.T) {
+	// --cron at end with no value → should be ""
+	tokens := strings.Fields("--cron")
+	cron, _, _ := parseFlags(tokens, "--cron", "--prompt", "--script")
+	if cron != "" {
+		t.Errorf("cron = %q, want empty", cron)
+	}
+}
