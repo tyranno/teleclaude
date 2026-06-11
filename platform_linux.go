@@ -41,7 +41,7 @@ func killPreviousInstance() {
 		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 && pid != myPID {
 			if syscall.Kill(pid, syscall.SIGTERM) == nil {
 				log.Printf("[main] sent SIGTERM to previous instance (PID %d)", pid)
-				time.Sleep(3 * time.Second)
+				waitForProcessExit(pid, 5*time.Second)
 				killed = true
 			}
 		}
@@ -58,10 +58,10 @@ func killPreviousInstance() {
 				if pid, _ := strconv.Atoi(pidStr); pid > 0 && pid != myPID {
 					syscall.Kill(pid, syscall.SIGTERM)
 					log.Printf("[main] sent SIGTERM to previous instance %q (PID %d)", name, pid)
+					waitForProcessExit(pid, 5*time.Second)
 				}
 			}
 		}
-		time.Sleep(1 * time.Second)
 	}
 }
 

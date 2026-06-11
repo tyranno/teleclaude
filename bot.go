@@ -59,42 +59,64 @@ func (b *Bot) Typing(chatID int64) {
 	}
 }
 
-// Run starts the long-polling loop. Blocks until the update channel closes.
+// Run starts the long-polling loop. Blocks until the process exits.
+// Uses GetUpdates directly (not GetUpdatesChan) so Conflict errors are visible
+// and trigger an automatic restart via os.Exit(1) + systemd Restart=on-failure.
 func (b *Bot) Run() {
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 30
-	updates := b.api.GetUpdatesChan(u)
 	log.Printf("[bot] @%s online, long-polling started", b.api.Self.UserName)
 	if b.onReady != nil {
-		b.onReady() // fire after polling starts — used by handoff to signal old process
+		b.onReady() // fire after polling confirmed — used by handoff to signal old process
 	}
 
-	for update := range updates {
-		if update.Message == nil || update.Message.From == nil {
+	offset := 0
+	for {
+		cfg := tgbotapi.NewUpdate(offset)
+		cfg.Timeout = 30
+		updates, err := b.api.GetUpdates(cfg)
+		if err != nil {
+			if strings.Contains(err.Error(), "Conflict") {
+				// Another instance is polling the same token.
+				// Exit so systemd restarts us; killPreviousInstance() will then
+				// terminate the other instance before we start polling again.
+				log.Printf("[bot] Conflict — 다른 인스턴스가 polling 중. 5초 후 재시작.")
+				time.Sleep(5 * time.Second)
+				os.Exit(1)
+			}
+			log.Printf("[bot] getUpdates 실패: %v — 3초 후 재시도", err)
+			time.Sleep(3 * time.Second)
 			continue
 		}
-		userID := update.Message.From.ID
-		if !b.cfg.IsAllowed(userID) {
-			log.Printf("[bot] denied user %d (%s)", userID, update.Message.From.UserName)
-			continue
-		}
-		chatID := update.Message.Chat.ID
 
-		// Attachments take priority over text — download then dispatch with caption.
-		if b.hasAttachment(update.Message) {
-			go b.handleAttachment(chatID, update.Message)
-			continue
-		}
+		for _, update := range updates {
+			if update.UpdateID+1 > offset {
+				offset = update.UpdateID + 1
+			}
+			if update.Message == nil || update.Message.From == nil {
+				continue
+			}
+			userID := update.Message.From.ID
+			if !b.cfg.IsAllowed(userID) {
+				log.Printf("[bot] denied user %d (%s)", userID, update.Message.From.UserName)
+				continue
+			}
+			chatID := update.Message.Chat.ID
 
-		text := strings.TrimSpace(update.Message.Text)
-		if text == "" {
-			continue
+			// Attachments take priority over text — download then dispatch with caption.
+			if b.hasAttachment(update.Message) {
+				go b.handleAttachment(chatID, update.Message)
+				continue
+			}
+
+			text := strings.TrimSpace(update.Message.Text)
+			if text == "" {
+				continue
+			}
+			if strings.HasPrefix(text, "!") {
+				b.handleCommand(chatID, text)
+				continue
+			}
+			b.dispatchText(chatID, text)
 		}
-		if strings.HasPrefix(text, "!") {
-			b.handleCommand(chatID, text)
-			continue
-		}
-		b.dispatchText(chatID, text)
 	}
 }
 
@@ -139,6 +161,55 @@ func (b *Bot) dispatchText(chatID int64, text string) {
 		}()
 
 		b.manager.Handle(ctx, chatID, text, b)
+
+		switch ctx.Err() {
+		case context.DeadlineExceeded:
+			_ = b.Send(chatID, "⏱ 타임아웃으로 작업을 중단했습니다.")
+		case context.Canceled:
+			_ = b.Send(chatID, "🛑 작업이 취소되었습니다.")
+		}
+	}()
+}
+
+// dispatchScheduledTask runs a pre-scheduled task in a fresh conversation.
+// Uses Manager.HandleScheduledTask instead of Handle so the prompt is never
+// routed via the Manager LLM and always runs in a clean, new conversation.
+func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
+	b.mu.Lock()
+	if b.busy {
+		b.queue = append(b.queue, queuedMsg{chatID: chatID, text: text})
+		b.mu.Unlock()
+		log.Printf("[scheduler] 예약 작업 대기열 추가 — Worker 완료 후 실행됩니다.")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(b.cfg.TimeoutMinutes)*time.Minute)
+	b.busy = true
+	b.cancelCurrent = cancel
+	b.mu.Unlock()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[bot] scheduled task panic: %v", r)
+			}
+			cancel()
+			b.mu.Lock()
+			b.busy = false
+			b.cancelCurrent = nil
+			var next *queuedMsg
+			if len(b.queue) > 0 {
+				n := b.queue[0]
+				next = &n
+				b.queue = b.queue[1:]
+			}
+			b.mu.Unlock()
+			if next != nil {
+				_ = b.Send(next.chatID, "▶️ 대기 중이던 요청을 시작합니다.")
+				b.dispatchText(next.chatID, next.text)
+			}
+		}()
+
+		b.manager.HandleScheduledTask(ctx, chatID, text, b)
 
 		switch ctx.Err() {
 		case context.DeadlineExceeded:

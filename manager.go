@@ -158,7 +158,15 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 	case ActionResume:
 		c, exists := m.store.GetConversation(dec.Project, dec.ConversationID)
 		if !exists {
-			_ = s.Send(chatID, "⚠️ 대화를 찾을 수 없습니다.")
+			// Conversation was deleted or never existed — start a new one instead of erroring.
+			newC, cerr := m.store.NewConversation(dec.Project, "새 대화")
+			if cerr != nil {
+				_ = s.Send(chatID, "⚠️ 대화를 찾을 수 없어 새 대화 생성도 실패했습니다: "+cerr.Error())
+				return
+			}
+			newC.Backend = currentBackend
+			_ = m.store.UpdateConversation(dec.Project, newC)
+			m.runWorker(ctx, chatID, text, dec.Project, newC, s, currentClient)
 			return
 		}
 		convBackend := c.Backend
@@ -611,6 +619,30 @@ func (m *Manager) handleSchedule(chatID int64, dec RouteDecision, s MessageSende
 		return
 	}
 
+	// If LLM returned a 5-field cron expression (or @-shorthand), use AddTask directly.
+	if isCronExpr(dec.ScheduleInterval) {
+		kind := "알림"
+		if dec.ScheduleIsTask {
+			kind = "Claude 작업"
+		}
+		t := &Task{
+			ID:        newTaskID(),
+			ChatID:    chatID,
+			Prompt:    dec.ScheduleTask,
+			CronExpr:  dec.ScheduleInterval,
+			Status:    "pending",
+			IsTask:    dec.ScheduleIsTask,
+			Label:     truncate(dec.ScheduleTask, 30),
+			CreatedAt: time.Now(),
+		}
+		if err := m.scheduler.AddTask(t); err != nil {
+			_ = s.Send(chatID, "⚠️ 작업 등록 실패: "+err.Error())
+			return
+		}
+		_ = s.Send(chatID, fmt.Sprintf("✅ 예약 등록 [%s] %s (%s)\n  %s", t.ID, dec.ScheduleInterval, kind, dec.ScheduleTask))
+		return
+	}
+
 	dur, label, err := ParseSchedule(dec.ScheduleInterval)
 	if err != nil {
 		_ = s.Send(chatID, fmt.Sprintf("🤔 시간을 파악하지 못했어요 (%q). 예) 30분 후에, 매시간, 매일", dec.ScheduleInterval))
@@ -639,6 +671,50 @@ func (m *Manager) handleSchedule(chatID int64, dec RouteDecision, s MessageSende
 	default:
 		_ = s.Send(chatID, "🤔 알림(일회성)인지 반복인지 명확하지 않아요. 예) 30분 후에 알림 / 매시간 서버 확인")
 	}
+}
+
+// isCronExpr returns true if s looks like a 5-field cron expression or @-shorthand.
+func isCronExpr(s string) bool {
+	if strings.HasPrefix(s, "@") {
+		return true
+	}
+	return len(strings.Fields(s)) == 5
+}
+
+// HandleScheduledTask executes a pre-scheduled task in a fresh conversation,
+// bypassing the Manager LLM routing so the task prompt is not misinterpreted
+// as a routing request and never leaks into a prior conversation's context.
+func (m *Manager) HandleScheduledTask(ctx context.Context, chatID int64, text string, s MessageSender) {
+	m.backendMu.RLock()
+	currentBackend := m.backendName
+	currentClient := m.client
+	m.backendMu.RUnlock()
+
+	projects := m.store.ListProjects()
+	if len(projects) == 0 {
+		_ = s.Send(chatID, "⚠️ 예약 작업 실행 실패: 등록된 프로젝트가 없습니다. !project add <이름> <경로>")
+		return
+	}
+
+	// Prefer the active project; fall back to first available.
+	projectName := m.store.GetActive().Project
+	if _, ok := m.store.GetProject(projectName); !ok {
+		for name := range projects {
+			projectName = name
+			break
+		}
+	}
+
+	c, err := m.store.NewConversation(projectName, "📅 "+truncate(text, 28))
+	if err != nil {
+		_ = s.Send(chatID, "⚠️ 예약 작업 대화 생성 실패: "+err.Error())
+		return
+	}
+	c.Backend = currentBackend
+	_ = m.store.UpdateConversation(projectName, c)
+
+	log.Printf("[manager] scheduled task → project=%s conv=%s", projectName, c.ID)
+	m.runWorker(ctx, chatID, text, projectName, c, s, currentClient)
 }
 
 // timeNow is a replaceable clock for testing.
