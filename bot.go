@@ -1372,6 +1372,15 @@ func (b *Bot) handleParallel(chatID int64, text string) {
 		_ = b.Send(chatID, "⚠️ 유효한 프롬프트가 없습니다.")
 		return
 	}
+	// Cap to MaxWorkers to prevent unbounded resource / rate-limit bypass.
+	maxP := b.cfg.MaxWorkers
+	if maxP < 1 {
+		maxP = 1
+	}
+	if len(prompts) > maxP {
+		_ = b.Send(chatID, fmt.Sprintf("⚠️ !parallel 최대 %d개까지 허용됩니다 (%d개 입력됨). 앞의 %d개만 실행합니다.", maxP, len(prompts), maxP))
+		prompts = prompts[:maxP]
+	}
 	if len(prompts) == 1 {
 		b.dispatchText(chatID, prompts[0])
 		return
@@ -1380,6 +1389,17 @@ func (b *Bot) handleParallel(chatID int64, text string) {
 	for _, p := range prompts {
 		b.dispatchText(chatID, p)
 	}
+}
+
+// removeInt64 returns a copy of ids without the given value.
+func removeInt64(ids []int64, v int64) []int64 {
+	out := ids[:0:0]
+	for _, id := range ids {
+		if id != v {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // handleUser manages the runtime allow-list: !user add <id> | remove <id> | list
@@ -1420,6 +1440,13 @@ func (b *Bot) handleUser(chatID int64, fields []string) {
 		}
 		if b.cfg.IsAllowed(id) {
 			_ = b.Send(chatID, "⚠️ config.txt AllowedUserIDs에 있는 사용자는 !user remove로 제거할 수 없습니다.")
+			return
+		}
+		// Lockout guard: refuse if removing this ID would leave no allowed users.
+		runtimeAfter := b.userStore.List()
+		runtimeAfter = removeInt64(runtimeAfter, id)
+		if len(b.cfg.AllowedUserIDs) == 0 && len(b.cfg.AllowedUsernames) == 0 && len(runtimeAfter) == 0 {
+			_ = b.Send(chatID, "⚠️ 이 사용자를 제거하면 허용된 사용자가 없어져 봇이 잠깁니다. 먼저 다른 사용자를 추가하세요.")
 			return
 		}
 		if err := b.userStore.Remove(id); err != nil {

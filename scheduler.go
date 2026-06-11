@@ -134,11 +134,14 @@ func (s *Scheduler) register(t *Task) error {
 		go func() {
 			select {
 			case <-time.After(delay):
-				s.fire(taskID)
-				s.mu.Lock()
-				s.removeByID(taskID)
-				_ = s.save()
-				s.mu.Unlock()
+				// fired=false means deps were not met and the task was rescheduled;
+				// the task must NOT be removed from the list in that case.
+				if s.fire(taskID) {
+					s.mu.Lock()
+					s.removeByID(taskID)
+					_ = s.save()
+					s.mu.Unlock()
+				}
 			case <-stopCh:
 			}
 		}()
@@ -173,12 +176,14 @@ func (s *Scheduler) depsMetLocked(t *Task) bool {
 }
 
 // fire executes a task's action (called by cron tick or one-shot goroutine).
-func (s *Scheduler) fire(taskID string) {
+// Returns true if the task was actually dispatched; false if deferred (deps not met).
+// One-shot goroutines must check the return value before removing the task.
+func (s *Scheduler) fire(taskID string) bool {
 	s.mu.Lock()
 	t := s.findByID(taskID)
 	if t == nil || t.Status != "pending" {
 		s.mu.Unlock()
-		return
+		return false
 	}
 	// DAG: skip if any dependency is still active.
 	if len(t.DependsOn) > 0 && !s.depsMetLocked(t) {
@@ -191,7 +196,7 @@ func (s *Scheduler) fire(taskID string) {
 			_ = s.save()
 		}
 		s.mu.Unlock()
-		return
+		return false
 	}
 	t.LastFired = time.Now()
 	chatID, prompt, script, isTask := t.ChatID, t.Prompt, t.Script, t.IsTask
@@ -204,7 +209,7 @@ func (s *Scheduler) fire(taskID string) {
 		wake, data := runScriptPrecheck(script)
 		if !wake {
 			log.Printf("[scheduler] task %s: wakeAgent=false — skipping this turn", taskID)
-			return
+			return true // consumed the turn; cron will fire again on next tick
 		}
 		if len(data) > 0 {
 			b, _ := json.Marshal(data)
@@ -217,6 +222,7 @@ func (s *Scheduler) fire(taskID string) {
 	} else if sendFn != nil {
 		go sendFn(chatID, "🔔 "+prompt)
 	}
+	return true
 }
 
 // AddTask adds a new Task and registers it with the scheduler.

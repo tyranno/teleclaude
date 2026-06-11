@@ -44,12 +44,18 @@ func (u *UserStore) Load() error {
 	return nil
 }
 
-func (u *UserStore) save() error {
+// snapshot returns a sorted copy of the current ID list. Lock must be held.
+func (u *UserStore) snapshot() []int64 {
 	ids := make([]int64, 0, len(u.userIDs))
 	for id := range u.userIDs {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
+	return ids
+}
+
+// persist writes ids to disk without holding the mutex.
+func (u *UserStore) persist(ids []int64) error {
 	data, err := json.MarshalIndent(userStoreData{UserIDs: ids}, "", "  ")
 	if err != nil {
 		return err
@@ -59,16 +65,18 @@ func (u *UserStore) save() error {
 
 func (u *UserStore) Add(id int64) error {
 	u.mu.Lock()
-	defer u.mu.Unlock()
 	u.userIDs[id] = true
-	return u.save()
+	ids := u.snapshot()
+	u.mu.Unlock()
+	return u.persist(ids)
 }
 
 func (u *UserStore) Remove(id int64) error {
 	u.mu.Lock()
-	defer u.mu.Unlock()
 	delete(u.userIDs, id)
-	return u.save()
+	ids := u.snapshot()
+	u.mu.Unlock()
+	return u.persist(ids)
 }
 
 func (u *UserStore) Contains(id int64) bool {
