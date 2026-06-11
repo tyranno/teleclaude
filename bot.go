@@ -493,7 +493,7 @@ func (b *Bot) handleUpdate(chatID int64) {
 //	!remind cancel <id>             — 취소
 func (b *Bot) handleRemind(chatID int64, text string, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !remind <시간> [task] <메시지>  |  !remind list  |  !remind cancel <id>\n예) !remind 30m 배포 확인, !remind 2h task 서버 상태 확인해줘")
+		_ = b.Send(chatID, "사용법: !remind <시간> [task] <메시지>  |  !remind list  |  !remind cancel <id>\n시간 예) 30m, 2h, 1d — 단위: m(분) h(시간) d(일)\n예) !remind 30m 배포 확인, !remind 2h task 서버 상태 확인해줘")
 		return
 	}
 	switch fields[1] {
@@ -569,7 +569,7 @@ func (b *Bot) handleRemind(chatID int64, text string, fields []string) {
 //	!cron remove <id>                      — 제거
 func (b *Bot) handleCron(chatID int64, text string, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !cron add <주기> [task] <내용>  |  !cron list  |  !cron remove <id>\n주기 예) 30m, 2h, daily, hourly\n예) !cron add 1h 서버 상태 확인, !cron add daily task 오늘의 작업 요약해줘")
+		_ = b.Send(chatID, "사용법: !cron add <주기> [task] <내용>  |  !cron list  |  !cron remove <id>\n주기 예) 30m, 2h, 1d, 1w, 매시간, 매일, 매주\n예) !cron add 1h 서버 상태 확인, !cron add 매일 task 오늘의 작업 요약해줘")
 		return
 	}
 	switch fields[1] {
@@ -765,7 +765,7 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 	case "add":
 		// !task add <cron|duration> [--script <script>] [task] <prompt>
 		if len(fields) < 4 {
-			_ = b.Send(chatID, "사용법: !task add <cron식|주기> [task] <프롬프트>\n예) !task add daily task 오늘 요약해줘\n    !task add 0 9 * * 1-5 task 주식 확인")
+			_ = b.Send(chatID, "사용법: !task add <주기> [task] <프롬프트>\n주기: 30m, 2h, 1d, 1w, 매시간, 매일, 매주, 또는 5-field cron\n예) !task add 매일 task 오늘 요약해줘\n    !task add 0 9 * * 1-5 task 주식 확인")
 			return
 		}
 		cronExpr, script, isTask, prompt, err := parseTaskAddArgs(fields[2:])
@@ -939,8 +939,9 @@ func taskHelpText() string {
 
 등록:
 !task add <주기> [task] <프롬프트>
-  주기: 30m, 2h, daily, weekly, 또는 5-field cron (0 9 * * 1-5)
+  주기: 30m, 2h, 1d, 1w, 매시간, 매일, 매주, 또는 5-field cron (0 9 * * 1-5)
   task 키워드 있으면 Claude 작업, 없으면 알림
+  예) !task add 매일 task 오늘 요약해줘
   예) !task add daily task 오늘 요약해줘
   예) !task add 0 9 * * 1-5 task 주식 확인
 
@@ -951,6 +952,7 @@ func taskHelpText() string {
 일회성:
 !task once <HH:MM|YYYY-MM-DD HH:MM> <메시지>
   예) !task once 09:00 아침 회의 준비해줘
+  예) !task once 2026-06-12 14:30 배포 확인해줘
 
 관리:
 !task list [pending|paused|all]
@@ -1211,12 +1213,13 @@ func helpText() string {
 !cancel                      진행 중 작업 취소
 
 스케줄 (통합):
-!task add <주기|cron> [task] <내용>   반복 작업/알림 등록
-!task once <HH:MM> <메시지>           일회성 알림
-!task list [pending|paused|all]       목록
-!task pause|resume|cancel <id>        관리
+!task add <주기|cron> [task] <내용>         반복 작업/알림 등록
+  주기: 30m 2h 1d 1w 매시간 매일 매주
+!task once <HH:MM|YYYY-MM-DD HH:MM> <내용>  일회성 알림
+!task list [pending|paused|all]             목록
+!task pause|resume|cancel <id>              관리
 !task update <id> --cron|--prompt|--script <값>
-!task help                            상세 도움말
+!task help                                  상세 도움말
 
 히스토리:
 !history [프로젝트] [YYYY-MM-DD]      대화 기록 조회
