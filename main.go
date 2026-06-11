@@ -182,7 +182,13 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		log.Printf("[main] scheduler load warning: %v", err)
 	}
 
-	bot := NewBot(api, cfg, store, manager, sched)
+	// UserStore: runtime-managed allowed user IDs (persist across restarts)
+	userStore := NewUserStore(filepath.Join(dir, "extra_users.json"))
+	if err := userStore.Load(); err != nil {
+		log.Printf("[main] userstore load warning: %v", err)
+	}
+
+	bot := NewBot(api, cfg, store, manager, sched, userStore)
 
 	// Wire scheduler send/dispatch after bot is created
 	sched.SetSend(func(chatID int64, text string) { _ = bot.Send(chatID, text) })

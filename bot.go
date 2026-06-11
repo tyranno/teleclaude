@@ -34,6 +34,7 @@ type Bot struct {
 	manager     *Manager
 	scheduler   *Scheduler
 	rateLimiter *RateLimiter
+	userStore   *UserStore
 	onReady     func() // called once after GetUpdatesChan starts (handoff signal)
 
 	mu          sync.Mutex
@@ -43,7 +44,7 @@ type Bot struct {
 	queue       []queuedMsg               // messages waiting for a free slot
 }
 
-func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager, scheduler *Scheduler) *Bot {
+func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {
 	return &Bot{
 		api:         api,
 		cfg:         cfg,
@@ -51,8 +52,16 @@ func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager
 		manager:     manager,
 		scheduler:   scheduler,
 		rateLimiter: NewRateLimiter(cfg.RateLimitPerMin),
+		userStore:   userStore,
 		cancels:     make(map[int]context.CancelFunc),
 	}
+}
+
+// isAllowed checks all auth sources: config IDs, config usernames, and runtime UserStore.
+func (b *Bot) isAllowed(userID int64, username string) bool {
+	return b.cfg.IsAllowed(userID) ||
+		b.cfg.IsAllowedByUsername(username) ||
+		(b.userStore != nil && b.userStore.Contains(userID))
 }
 
 // Send delivers a plain-text message (MessageSender).
@@ -108,8 +117,9 @@ func (b *Bot) Run() {
 				continue
 			}
 			userID := update.Message.From.ID
-			if !b.cfg.IsAllowed(userID) {
-				log.Printf("[bot] denied user %d (%s)", userID, update.Message.From.UserName)
+			username := update.Message.From.UserName
+			if !b.isAllowed(userID, username) {
+				log.Printf("[bot] denied user %d (%s)", userID, username)
 				continue
 			}
 			chatID := update.Message.Chat.ID
@@ -271,6 +281,8 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		b.handleHistory(chatID, fields)
 	case "!backend":
 		b.handleBackend(chatID, fields)
+	case "!user":
+		b.handleUser(chatID, fields)
 	default:
 		_ = b.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
 	}
@@ -1289,6 +1301,82 @@ func (b *Bot) handleBackend(chatID int64, fields []string) {
 	_ = b.Send(chatID, fmt.Sprintf("✅ 백엔드 전환됨: %s → %s", strings.ToUpper(current), strings.ToUpper(target)))
 }
 
+// handleUser manages the runtime allow-list: !user add <id> | remove <id> | list
+func (b *Bot) handleUser(chatID int64, fields []string) {
+	if b.userStore == nil {
+		_ = b.Send(chatID, "⚠️ UserStore를 사용할 수 없습니다.")
+		return
+	}
+	if len(fields) < 2 {
+		_ = b.Send(chatID, "사용법: !user add <id> | !user remove <id> | !user list")
+		return
+	}
+	switch fields[1] {
+	case "add":
+		if len(fields) < 3 {
+			_ = b.Send(chatID, "사용법: !user add <telegram_user_id>")
+			return
+		}
+		var id int64
+		if _, err := fmt.Sscanf(fields[2], "%d", &id); err != nil {
+			_ = b.Send(chatID, "⚠️ 잘못된 사용자 ID (숫자 입력 필요): "+fields[2])
+			return
+		}
+		if err := b.userStore.Add(id); err != nil {
+			_ = b.Send(chatID, "⚠️ 저장 실패: "+err.Error())
+			return
+		}
+		_ = b.Send(chatID, fmt.Sprintf("✅ 사용자 추가됨: %d", id))
+	case "remove":
+		if len(fields) < 3 {
+			_ = b.Send(chatID, "사용법: !user remove <telegram_user_id>")
+			return
+		}
+		var id int64
+		if _, err := fmt.Sscanf(fields[2], "%d", &id); err != nil {
+			_ = b.Send(chatID, "⚠️ 잘못된 사용자 ID: "+fields[2])
+			return
+		}
+		if b.cfg.IsAllowed(id) {
+			_ = b.Send(chatID, "⚠️ config.txt AllowedUserIDs에 있는 사용자는 !user remove로 제거할 수 없습니다.")
+			return
+		}
+		if err := b.userStore.Remove(id); err != nil {
+			_ = b.Send(chatID, "⚠️ 저장 실패: "+err.Error())
+			return
+		}
+		_ = b.Send(chatID, fmt.Sprintf("🗑 사용자 제거됨: %d", id))
+	case "list":
+		var sb strings.Builder
+		sb.WriteString("👥 허용된 사용자:\n")
+		sb.WriteString("  [config] IDs: ")
+		for i, id := range b.cfg.AllowedUserIDs {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			fmt.Fprintf(&sb, "%d", id)
+		}
+		if len(b.cfg.AllowedUsernames) > 0 {
+			sb.WriteString("\n  [config] 유저네임: @" + strings.Join(b.cfg.AllowedUsernames, ", @"))
+		}
+		runtimeIDs := b.userStore.List()
+		if len(runtimeIDs) > 0 {
+			sb.WriteString("\n  [runtime] IDs: ")
+			for i, id := range runtimeIDs {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				fmt.Fprintf(&sb, "%d", id)
+			}
+		} else {
+			sb.WriteString("\n  [runtime] 없음")
+		}
+		_ = b.Send(chatID, sb.String())
+	default:
+		_ = b.Send(chatID, "사용법: !user add <id> | !user remove <id> | !user list")
+	}
+}
+
 func helpText() string {
 	return strings.TrimSpace(`
 🤖 teleclaude — 폰에서 PC의 Claude를 자연어로 쓰세요.
@@ -1319,6 +1407,11 @@ func helpText() string {
 히스토리:
 !history [프로젝트] [YYYY-MM-DD]      대화 기록 조회
 !history list [프로젝트|all]          날짜 목록 (all = 전체 프로젝트)
+
+사용자 관리:
+!user add <id>               런타임 허용 사용자 추가 (재시작 후에도 유지)
+!user remove <id>            런타임 허용 사용자 제거
+!user list                   허용 사용자 목록 (config + runtime)
 
 기타:
 !remind <시간> <메시지>      일회성 알림 (구버전 호환)

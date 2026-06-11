@@ -20,10 +20,11 @@ type Config struct {
 	CodexModel        string // worker model (powerful) — "" = codex built-in default
 	CodexManagerModel string // routing model (fast/cheap) — "" = same as CodexModel
 	DefaultBackend    string // "claude" | "codex" — "" = "claude"
-	MaxWorkers        int    // max concurrent Worker goroutines, default 3
-	RateLimitPerMin   int    // max user messages per minute, 0 = unlimited, default 20
-	AllowScripts      bool   // permit --script in !task add/update, default false
+	MaxWorkers            int      // max concurrent Worker goroutines, default 3
+	RateLimitPerMin       int      // max user messages per minute, 0 = unlimited, default 20
+	AllowScripts          bool     // permit --script in !task add/update, default false
 	AllowedScriptCommands []string // whitelist of allowed script first-tokens; empty = any
+	AllowedUsernames      []string // Telegram usernames (without @) allowed to use the bot
 }
 
 // ConversationTurn represents one exchange in a conversation.

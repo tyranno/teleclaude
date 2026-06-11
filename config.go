@@ -137,6 +137,12 @@ func applyConfigKV(cfg *Config, key, val string) error {
 				cfg.AllowedScriptCommands = append(cfg.AllowedScriptCommands, c)
 			}
 		}
+	case "ALLOWED_USERNAMES":
+		for _, u := range strings.Split(val, ",") {
+			if name := strings.TrimPrefix(strings.TrimSpace(u), "@"); name != "" {
+				cfg.AllowedUsernames = append(cfg.AllowedUsernames, name)
+			}
+		}
 	}
 	return nil
 }
@@ -184,6 +190,15 @@ func (c *Config) validate() error {
 // IsAllowed reports whether the given Telegram user ID may use the bot.
 func (c *Config) IsAllowed(userID int64) bool {
 	return slices.Contains(c.AllowedUserIDs, userID)
+}
+
+// IsAllowedByUsername reports whether the given Telegram username (without @) may use the bot.
+// Returns false when username is empty.
+func (c *Config) IsAllowedByUsername(username string) bool {
+	if username == "" {
+		return false
+	}
+	return slices.Contains(c.AllowedUsernames, username)
 }
 
 // findClaude resolves the claude CLI path: explicit > PATH > platform-specific locations.
