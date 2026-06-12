@@ -6,8 +6,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
+
+// historyMu serialises concurrent WriteHistory calls.
+// O_APPEND is not atomic for large writes on Windows; this ensures well-formed Markdown.
+var historyMu sync.Mutex
 
 // historyDirOverride can be set in tests to redirect history I/O to a temp directory.
 var historyDirOverride string
@@ -34,7 +39,11 @@ func historyDir() (string, error) {
 
 // WriteHistory appends a conversation turn to ~/.teleclaude/history/<project>/<YYYY-MM-DD>.md.
 // Response is truncated to 500 characters.
+// Uses historyMu to serialise concurrent writes from parallel workers.
 func WriteHistory(project, title, prompt, response string) error {
+	historyMu.Lock()
+	defer historyMu.Unlock()
+
 	base, err := historyDir()
 	if err != nil {
 		return err
