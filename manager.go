@@ -421,6 +421,22 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 			_ = s.Send(chatID, "📝 세션 한계에 도달해 새 시리즈로 재시작합니다...")
 			retryPrompt := buildContextPrompt(text, overflowSummary, globalMemory, projectMemory, nil)
 			log.Printf("[worker] ▶ retry backend=%s model=%q conv=%s (context overflow)", backend, workerModel, workConv.ID)
+
+			// Restart heartbeat for the retry turn — it may take another full TimeoutMinutes.
+			retryDone := make(chan struct{})
+			go func() {
+				ticker := time.NewTicker(2 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						e := time.Since(startTime)
+						_ = s.Send(chatID, fmt.Sprintf("⏳ 재시작 진행 중... (%d분 %d초 경과)", int(e.Minutes()), int(e.Seconds())%60))
+					case <-retryDone:
+						return
+					}
+				}
+			}()
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:    retryPrompt,
 				WorkDir:   workDir,
@@ -428,6 +444,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 				Resume:    false,
 				Model:     workerModel,
 			})
+			close(retryDone)
 			elapsed = time.Since(startTime)
 			if err != nil {
 				_ = s.Send(chatID, "⚠️ 재시작 후 작업 실패: "+err.Error())
