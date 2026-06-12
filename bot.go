@@ -789,23 +789,28 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 	case "update":
 		// !task update <id> [--cron <expr>] [--prompt <text>] [--script <script>] [--depends-on <id,...>]
 		if len(fields) < 3 {
-			_ = b.Send(chatID, "사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>] [--depends-on <id,...>]")
+			_ = b.Send(chatID, "사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트|clear>] [--depends-on <id,...|none>]")
 			return
 		}
 		id := fields[2]
 		cronExpr, prompt, script, depsRaw := parseFlags4(fields[3:], "--cron", "--prompt", "--script", "--depends-on")
 		if cronExpr == "" && prompt == "" && script == "" && depsRaw == "" {
-			_ = b.Send(chatID, "⚠️ 변경할 항목을 지정하세요.\n사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>] [--depends-on <id,...>]")
+			_ = b.Send(chatID, "⚠️ 변경할 항목을 지정하세요.\n사용법: !task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트|clear>] [--depends-on <id,...|none>]")
 			return
 		}
-		if script != "" {
+		// Sentinels: "--script clear" removes the script; "--depends-on none" clears deps.
+		if script == "clear" {
+			script = "\x00" // marker passed to UpdateTask to clear
+		} else if script != "" {
 			if verr := validateScript(b.cfg, script); verr != nil {
 				_ = b.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
 				return
 			}
 		}
 		var deps []string
-		if depsRaw != "" {
+		if depsRaw == "none" {
+			deps = []string{} // explicit clear
+		} else if depsRaw != "" {
 			deps = parseDependsOn(depsRaw)
 		}
 		if err := b.scheduler.UpdateTask(id, cronExpr, prompt, script, deps); err != nil {
@@ -1102,7 +1107,9 @@ func taskHelpText() string {
 !task pause <id>      — 일시정지
 !task resume <id>     — 재개
 !task cancel <id>     — 취소
-!task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트>]
+!task update <id> [--cron <식>] [--prompt <텍스트>] [--script <스크립트|clear>] [--depends-on <id,...|none>]
+  --script clear        스크립트 제거
+  --depends-on none     의존성 초기화
 `)
 }
 

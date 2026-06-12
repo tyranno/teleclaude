@@ -307,7 +307,12 @@ func (s *Scheduler) UpdateTask(id, cronExpr, prompt, script string, dependsOn []
 	if prompt != "" {
 		t.Prompt = prompt
 	}
-	if script != "" {
+	switch script {
+	case "":
+		// no change
+	case "\x00":
+		t.Script = "" // clear sentinel
+	default:
 		t.Script = script
 	}
 	if dependsOn != nil {
