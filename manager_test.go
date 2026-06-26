@@ -151,6 +151,55 @@ func TestManager_NoProjects_Guides(t *testing.T) {
 	}
 }
 
+// Regression: LLM returns resume with an empty project (vague follow-up).
+// Must continue the ACTIVE conversation, not crash into NewConversation("").
+func TestManager_EmptyProject_FallsBackToActive(t *testing.T) {
+	fc := &fakeClaude{
+		decision: RouteDecision{Action: ActionResume, Project: "", ConversationID: ""},
+		runRes:   RunResult{Text: "이어서 처리"},
+	}
+	m, st, _ := mgrFixture(t, fc)
+	c, _ := st.NewConversation("myapp", "활성 대화")
+	c.Started = true
+	_ = st.UpdateConversation("myapp", c)
+	_ = st.SetActive("myapp", c.ID)
+
+	f := &fakeSender{}
+	m.Handle(context.Background(), 1, "가능한지 확인해봐", f)
+
+	if fc.runCalls != 1 {
+		t.Fatalf("expected resume of active conversation, got %d run calls", fc.runCalls)
+	}
+	if fc.lastRun.SessionID != c.SessionID {
+		t.Errorf("should resume active session %q, got %q", c.SessionID, fc.lastRun.SessionID)
+	}
+	for _, msg := range f.sent {
+		if contains(msg, "찾을 수 없") {
+			t.Errorf("must not emit not-found error: %q", msg)
+		}
+	}
+}
+
+// Regression: empty project AND no active conversation → clarify, never crash.
+func TestManager_EmptyProject_NoActive_Clarifies(t *testing.T) {
+	fc := &fakeClaude{decision: RouteDecision{Action: ActionResume, Project: ""}}
+	m, _, _ := mgrFixture(t, fc) // project registered but no active set
+	f := &fakeSender{}
+	m.Handle(context.Background(), 1, "가능한지 확인해봐", f)
+
+	if fc.runCalls != 0 {
+		t.Errorf("should not run worker, got %d", fc.runCalls)
+	}
+	if len(f.sent) == 0 {
+		t.Fatal("should send a clarify message")
+	}
+	for _, msg := range f.sent {
+		if contains(msg, "프로젝트를 찾을 수 없습니다:") {
+			t.Errorf("must not crash with not-found error: %q", msg)
+		}
+	}
+}
+
 func TestManager_AutoContinuation_LargeHistory(t *testing.T) {
 	// Create a conversation with large history to trigger auto-continuation
 	fc := &fakeClaude{runRes: RunResult{Text: "더 많은 작업 완료"}}

@@ -143,6 +143,22 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 		return
 	}
 
+	// Guard: a resume/new decision that names an empty or unregistered project
+	// (common when the LLM can't pin a vague follow-up). Continue the active
+	// conversation if there is one; otherwise ask — never crash into NewConversation("").
+	if dec.Action == ActionResume || dec.Action == ActionNew {
+		if _, pok := m.store.GetProject(dec.Project); !pok {
+			if active := m.store.GetActive(); active.Project != "" {
+				if ac, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
+					m.runWorker(ctx, chatID, text, active.Project, "", ac, s, currentClient)
+					return
+				}
+			}
+			_ = s.Send(chatID, "🤔 어느 프로젝트에서 이어갈지 모르겠어요. !project list 로 확인하거나 \"<프로젝트명> ...\" 처럼 프로젝트를 함께 적어 주세요.")
+			return
+		}
+	}
+
 	switch dec.Action {
 	case ActionStatus:
 		_ = s.Send(chatID, m.DescribeActiveWorkers())
