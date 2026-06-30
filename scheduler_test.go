@@ -92,9 +92,16 @@ func TestDetectBackendSwitchIntent(t *testing.T) {
 func newTestScheduler(t *testing.T) *Scheduler {
 	t.Helper()
 	s := NewScheduler(filepath.Join(t.TempDir(), "tasks.json"))
-	// Start the cron runner so register() can actually add entries.
-	go s.Run()
-	t.Cleanup(func() { s.Stop() })
+	// Start the cron runner directly rather than `go s.Run()`: Run()'s startup
+	// loop registers any pending tasks in s.tasks, which would race with the
+	// test's own AddTask and double-register the same task (a flaky, changing
+	// entryID). The scheduler starts empty here, so Run()'s startup registration
+	// is a no-op anyway — we only need the cron runner started.
+	s.cronRunner.Start()
+	t.Cleanup(func() {
+		s.cronRunner.Stop()
+		s.Stop()
+	})
 	return s
 }
 
