@@ -211,6 +211,25 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	manager.SetScheduler(sched)
 	go sched.Run()
 
+	// Config hot-reload: watch the YAML file and apply changes without restart.
+	hooks := ReloadHooks{
+		OnRateLimit:    func(n int) { bot.rateLimiter.SetLimit(n) },
+		OnTokenChanged: func() { log.Printf("[config] 봇 토큰 변경 감지 — 적용하려면 재시작 필요") },
+		OnScreenControl: func(on bool) {
+			log.Printf("[config] screen_control=%v (M1에서 처리)", on) // M1 훅 연결 지점
+		},
+		Notify: func(msg string) {
+			for _, id := range holder.Get().AllowedUserIDs {
+				_ = bot.Send(id, msg)
+			}
+		},
+	}
+	if stop, werr := WatchConfig(cfgPath, holder, hooks); werr != nil {
+		log.Printf("[config] hot-reload 비활성: %v", werr)
+	} else {
+		defer stop()
+	}
+
 	// Capture exe path now — before any rename — for selfRename closure.
 	currentExe, _ := os.Executable()
 
