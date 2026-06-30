@@ -68,7 +68,9 @@ func LoadOrMigrate(dir string) (*Config, string, error) {
 		if werr := os.WriteFile(yamlPath, out, 0o600); werr != nil {
 			return nil, txtPath, werr
 		}
-		_ = os.Rename(txtPath, txtPath+".bak")
+		if rerr := os.Rename(txtPath, txtPath+".bak"); rerr != nil {
+			log.Printf("[config] config.txt → .bak 이름변경 실패(무시): %v", rerr)
+		}
 		log.Printf("[config] config.txt → config.yaml 마이그레이션 완료 (txt는 .bak로 보존)")
 		return cfg, yamlPath, nil
 	}

@@ -62,11 +62,11 @@ func (r *RateLimiter) Allow(userID int64) bool {
 // Remaining returns how many more events the user can make in the current window.
 // Returns -1 when unlimited (maxPerMin == 0).
 func (r *RateLimiter) Remaining(userID int64) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.maxPerMin <= 0 {
 		return -1
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	cutoff := time.Now().Add(-time.Minute)
 	count := 0
 	for _, t := range r.windows[userID] {

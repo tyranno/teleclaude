@@ -85,7 +85,11 @@ func yamlToConfig(y *yamlConfig) *Config {
 		c.RateLimitPerMin = *y.Runtime.RateLimitPerMin
 	}
 	c.AllowScripts = y.Scripts.Allow
-	c.AllowedScriptCommands = y.Scripts.AllowedCommands
+	for _, cmd := range y.Scripts.AllowedCommands {
+		if s := strings.TrimSpace(cmd); s != "" {
+			c.AllowedScriptCommands = append(c.AllowedScriptCommands, s)
+		}
+	}
 	c.ScreenControl = y.ScreenControl.Enabled
 	c.ScreenPresetsFile = y.ScreenControl.PresetsFile
 	return c

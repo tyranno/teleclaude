@@ -48,6 +48,11 @@ func WatchConfig(path string, holder *ConfigHolder, hooks ReloadHooks) (func(), 
 	go func() {
 		var timer *time.Timer
 		reload := func() {
+			select {
+			case <-done:
+				return
+			default:
+			}
 			cfg, err := LoadConfig(path)
 			if err != nil {
 				log.Printf("[config] reload 실패: %v (이전 설정 유지)", err)

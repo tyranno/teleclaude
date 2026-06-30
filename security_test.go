@@ -127,3 +127,15 @@ func TestLoadConfig_Security_Parse(t *testing.T) {
 		t.Errorf("AllowedScriptCommands = %v, want 3 items", cfg.AllowedScriptCommands)
 	}
 }
+
+func TestRateLimiter_Remaining_AfterSetLimit(t *testing.T) {
+	r := NewRateLimiter(2)
+	_ = r.Allow(9)
+	if got := r.Remaining(9); got != 1 {
+		t.Errorf("Remaining = %d, want 1", got)
+	}
+	r.SetLimit(0)
+	if got := r.Remaining(9); got != -1 {
+		t.Errorf("after SetLimit(0) Remaining = %d, want -1 (unlimited)", got)
+	}
+}

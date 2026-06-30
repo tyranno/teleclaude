@@ -148,7 +148,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	runner := NewClaudeRunner(claudePath, holder)
 	var codexRunner ClaudeClient
 	if codexPath, err := findCodex(cfg.CodexPath); err == nil && codexPath != "" {
-		codexRunner = NewCodexRunner(codexPath, cfg)
+		codexRunner = NewCodexRunner(codexPath, holder)
 		log.Printf("[main] codex: %s", codexPath)
 	} else if err != nil {
 		log.Printf("[main] codex not available: %v", err)

@@ -19,8 +19,10 @@ import (
 // Codex JSONL sessions are identified by thread_id from the thread.started event.
 type codexRunner struct {
 	codexPath string
-	cfg       *Config
+	cfgh      *ConfigHolder
 }
+
+func (r *codexRunner) cfg() *Config { return r.cfgh.Get() }
 
 // resolveNativeCodex finds the platform-specific codex.exe given the npm .cmd wrapper path.
 // npm installs codex.cmd at <root> and the native binary inside node_modules.
@@ -57,7 +59,7 @@ func resolveNativeCodex(cmdPath string) string {
 // NewCodexRunner builds a ClaudeClient backed by the local codex CLI.
 // If given an npm .cmd wrapper, it resolves to the native codex.exe to avoid
 // cmd.exe + node.exe chain issues with stdin and spaces-in-path.
-func NewCodexRunner(codexPath string, cfg *Config) *codexRunner {
+func NewCodexRunner(codexPath string, cfgh *ConfigHolder) *codexRunner {
 	ext := strings.ToLower(filepath.Ext(codexPath))
 	if ext == ".cmd" || ext == ".bat" {
 		if native := resolveNativeCodex(codexPath); native != "" {
@@ -65,7 +67,7 @@ func NewCodexRunner(codexPath string, cfg *Config) *codexRunner {
 			codexPath = native
 		}
 	}
-	return &codexRunner{codexPath: codexPath, cfg: cfg}
+	return &codexRunner{codexPath: codexPath, cfgh: cfgh}
 }
 
 // codexWorkerModel returns the model for actual work (Run). "" = codex built-in default.
@@ -274,12 +276,12 @@ func (r *codexRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisio
 		"--json",
 		"-o", outFile,
 	}
-	if m := codexManagerModel(r.cfg); m != "" {
+	if m := codexManagerModel(r.cfg()); m != "" {
 		args = append(args, "-m", m)
 	}
 	args = append(args, prompt)
 
-	log.Printf("[codex] route: model=%q projects=%d", codexManagerModel(r.cfg), len(req.Projects))
+	log.Printf("[codex] route: model=%q projects=%d", codexManagerModel(r.cfg()), len(req.Projects))
 	home, _ := os.UserHomeDir()
 	_, stderr, err := r.exec(routeCtx, home, args, "")
 	if err != nil {
@@ -307,7 +309,7 @@ func (r *codexRunner) Run(ctx context.Context, req RunRequest) (RunResult, error
 
 	model := req.Model
 	if model == "" {
-		model = codexWorkerModel(r.cfg)
+		model = codexWorkerModel(r.cfg())
 	}
 
 	// Codex exec without --ephemeral enters a REPL loop and waits for more stdin after
