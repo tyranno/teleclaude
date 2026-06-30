@@ -62,6 +62,13 @@ func main() {
 		if err := RunSetup(path); err != nil {
 			log.Fatalf("설정 마법사 중단: %v", err)
 		}
+	case "__mcp-screen":
+		// Internal, undocumented: teleclaude re-invokes itself with this hidden
+		// subcommand to run the embedded screen-control MCP server over stdio.
+		// Not user-facing (omitted from the usage line below).
+		if err := RunMCPScreen(); err != nil {
+			log.Fatal(err)
+		}
 	case "version", "--version", "-v":
 		fmt.Println("teleclaude 0.2.0")
 	default:
