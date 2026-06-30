@@ -45,6 +45,28 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// launch_app — find and launch an installed app by name.
+	s.AddTool(
+		mcp.NewTool("launch_app",
+			mcp.WithDescription("Launch an installed Windows application by name. Searches Start Menu shortcuts (per-user and machine-wide) for a *.lnk whose name contains the given name, else lets Windows resolve the name (e.g. 'notepad', 'calc'). After launching, give the app a moment to appear, then use focus_window before driving it."),
+			mcp.WithString("name",
+				mcp.Description("Application name to launch (e.g. 'Calculator', 'Notepad', 'Chrome')."),
+				mcp.Required(),
+			),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			desc, err := launchApp(name)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("launch_app failed", err), nil
+			}
+			return mcp.NewToolResultText("ok: " + desc), nil
+		},
+	)
+
 	// focus_window — bring a window to the foreground by title or hwnd.
 	s.AddTool(
 		mcp.NewTool("focus_window",

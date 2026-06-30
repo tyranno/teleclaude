@@ -223,7 +223,14 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		OnRateLimit:    func(n int) { bot.rateLimiter.SetLimit(n) },
 		OnTokenChanged: func() { log.Printf("[config] 봇 토큰 변경 감지 — 적용하려면 재시작 필요") },
 		OnScreenControl: func(on bool) {
-			log.Printf("[config] screen_control=%v (M1에서 처리)", on) // M1 훅 연결 지점
+			state := "OFF"
+			if on {
+				state = "ON"
+			}
+			log.Printf("[screen] screen_control %s", state)
+			for _, id := range holder.Get().AllowedUserIDs {
+				_ = bot.Send(id, "🖥 화면제어 "+state)
+			}
 		},
 		Notify: func(msg string) {
 			for _, id := range holder.Get().AllowedUserIDs {

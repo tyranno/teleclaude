@@ -67,8 +67,16 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 	return dec, nil
 }
 
-// Run executes a Worker turn in the project directory and returns the final text.
-func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+// workerBaseArgs builds the claude CLI args for a Worker turn. It is a pure
+// function (no exec, no os state beyond the supplied selfExe) so the screen-
+// control injection is unit-testable. When cfg.ScreenControl is true, the
+// teleclaude-owned screen MCP server args (screenWorkerArgs) are appended so the
+// worker can drive the Windows desktop; when false they are omitted.
+//
+// selfExe is the teleclaude executable path (os.Executable()) that the screen
+// MCP server is launched from via the hidden "__mcp-screen" subcommand. If it is
+// empty the screen args are skipped (we cannot point the worker at ourselves).
+func workerBaseArgs(cfg *Config, req RunRequest, selfExe string) []string {
 	args := []string{"-p", req.Prompt, "--output-format", "json", "--dangerously-skip-permissions"}
 	args = append(args, isolationArgs...)
 	if req.Model != "" {
@@ -79,6 +87,16 @@ func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, erro
 	} else {
 		args = append(args, "--session-id", req.SessionID)
 	}
+	if cfg != nil && cfg.ScreenControl && selfExe != "" {
+		args = append(args, screenWorkerArgs(selfExe)...)
+	}
+	return args
+}
+
+// Run executes a Worker turn in the project directory and returns the final text.
+func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	selfExe, _ := os.Executable()
+	args := workerBaseArgs(r.cfg(), req, selfExe)
 
 	stdout, stderr, err := r.exec(ctx, req.WorkDir, args)
 	if err != nil {

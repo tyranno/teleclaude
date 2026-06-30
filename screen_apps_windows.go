@@ -4,6 +4,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -160,6 +163,135 @@ func forceForeground(target uintptr) error {
 		return nil
 	}
 	return fmt.Errorf("SetForegroundWindow failed")
+}
+
+// appAliases maps common app names to a concrete executable that works
+// regardless of the Windows UI language (e.g. on Korean Windows the Calculator
+// Start Menu shortcut is "계산기", not "Calculator", so a name search misses it).
+// Keys are lower-cased.
+var appAliases = map[string]string{
+	"calculator":     "calc.exe",
+	"calc":           "calc.exe",
+	"notepad":        "notepad.exe",
+	"메모장":            "notepad.exe",
+	"explorer":       "explorer.exe",
+	"file explorer":  "explorer.exe",
+	"파일 탐색기":         "explorer.exe",
+	"cmd":            "cmd.exe",
+	"command prompt": "cmd.exe",
+	"paint":          "mspaint.exe",
+	"task manager":   "taskmgr.exe",
+}
+
+// launchApp finds and launches a Windows application BY NAME and returns a
+// human-readable description of which fallback path succeeded.
+//
+// Fallback chain (first that launches wins):
+//  1. Built-in alias map for common Windows apps (language-independent).
+//  2. Start Menu *.lnk search (per-user + machine-wide, recursive) whose base
+//     name contains the given name case-insensitively.
+//  3. PATH lookup of <name> / <name>.exe, launched via the shell.
+//  4. Last resort: `start "" "<name>"` to let the shell resolve it.
+//
+// On total failure it returns an error listing what was tried — it never relies
+// on a path that pops a GUI "not found" dialog without also reporting failure.
+//
+// CGO-free; uses os/exec.
+func launchApp(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("launch_app: empty name")
+	}
+
+	var tried []string
+
+	// 1) Alias map (language-independent executables).
+	if exeName, ok := appAliases[strings.ToLower(name)]; ok {
+		if err := runDetached(exeName); err == nil {
+			return fmt.Sprintf("launched via alias map: %s -> %s", name, exeName), nil
+		}
+		tried = append(tried, "alias "+exeName)
+	}
+
+	// 2) Start Menu shortcut search.
+	if lnk := findStartMenuShortcut(name); lnk != "" {
+		if err := shellStart(lnk); err == nil {
+			return fmt.Sprintf("launched Start Menu shortcut: %s", lnk), nil
+		}
+		tried = append(tried, "shortcut "+lnk)
+	} else {
+		tried = append(tried, "no Start Menu .lnk match")
+	}
+
+	// 3) PATH lookup of <name> and <name>.exe.
+	for _, cand := range []string{name, name + ".exe"} {
+		if p, err := exec.LookPath(cand); err == nil {
+			if rerr := runDetached(p); rerr == nil {
+				return fmt.Sprintf("launched via PATH: %s", p), nil
+			}
+			tried = append(tried, "PATH "+p)
+		}
+	}
+
+	// 4) Last resort: shell resolve (covers UWP App Paths etc.).
+	if err := shellStart(name); err == nil {
+		return fmt.Sprintf("launched via shell resolve: %s", name), nil
+	}
+	tried = append(tried, "shell start "+name)
+
+	return "", fmt.Errorf("launch_app: could not launch %q; tried: %s", name, strings.Join(tried, "; "))
+}
+
+// runDetached starts an executable directly (no shell), detached from this
+// process, returning an error if the process could not be started.
+func runDetached(exePath string) error {
+	return exec.Command(exePath).Start()
+}
+
+// startMenuDirs returns the per-user and machine-wide Start Menu Programs roots.
+func startMenuDirs() []string {
+	var dirs []string
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		dirs = append(dirs, filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs"))
+	}
+	if programData := os.Getenv("ProgramData"); programData != "" {
+		dirs = append(dirs, filepath.Join(programData, "Microsoft", "Windows", "Start Menu", "Programs"))
+	}
+	return dirs
+}
+
+// findStartMenuShortcut walks the Start Menu Programs folders and returns the
+// path of the first *.lnk whose base name contains name (case-insensitive).
+func findStartMenuShortcut(name string) string {
+	needle := strings.ToLower(name)
+	for _, root := range startMenuDirs() {
+		var found string
+		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info == nil || info.IsDir() {
+				return nil
+			}
+			if !strings.EqualFold(filepath.Ext(path), ".lnk") {
+				return nil
+			}
+			base := strings.ToLower(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+			if strings.Contains(base, needle) {
+				found = path
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		if found != "" {
+			return found
+		}
+	}
+	return ""
+}
+
+// shellStart launches a target (a .lnk path or an app name) via the shell's
+// `start` verb, so shortcuts and registered app names both resolve. The empty
+// "" arg is the window TITLE that `start` requires before the target.
+func shellStart(target string) error {
+	return exec.Command("cmd", "/c", "start", "", target).Start()
 }
 
 // parseHWND parses "0x.." (hex) or a decimal string into an HWND value.
