@@ -136,6 +136,20 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		}
 	}
 
+	// Elevation: when screen_control.elevated is set but we are not already
+	// elevated, relaunch ourselves as administrator so synthetic input can drive
+	// elevated target apps (Windows UIPI drops input from lower-integrity procs).
+	// No-op on non-Windows and when already elevated.
+	if cfg.ScreenControl && cfg.ScreenElevated && !isElevated() {
+		log.Printf("[main] screen_control.elevated=true and process not elevated → relaunching as administrator (UAC)…")
+		if rerr := relaunchElevated(); rerr != nil {
+			log.Printf("[main] elevation relaunch failed: %v (continuing un-elevated; elevated target apps may not respond to clicks)", rerr)
+		} else {
+			log.Printf("[main] elevated instance launched; exiting un-elevated instance.")
+			return nil
+		}
+	}
+
 	claudePath, err := findClaude(cfg.ClaudePath)
 	if err != nil {
 		return err

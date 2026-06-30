@@ -28,6 +28,7 @@ type Config struct {
 	AllowedUsernames      []string // Telegram usernames (without @) allowed to use the bot
 	ScreenControl         bool     // screen-control MCP 활성화 (Windows). 기본 false
 	ScreenPresetsFile     string   // 좌표 프리셋 파일 경로. 빈 값이면 ~/.teleclaude/presets.json
+	ScreenElevated        bool     // 관리자 권한으로 실행해 관리자 대상 앱도 제어 (Windows UIPI 우회). 기본 false
 }
 
 // ConversationTurn represents one exchange in a conversation.

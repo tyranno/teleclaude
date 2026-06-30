@@ -111,15 +111,41 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// capture_window — crop the screenshot to one window. Smaller image stays
+	// under the vision downscale cap, so it is sharp and pixel-accurate; the
+	// returned caption gives the origin to map image pixels to screen coords.
+	s.AddTool(
+		mcp.NewTool("capture_window",
+			mcp.WithDescription("Capture ONLY the given window (cropped to its rectangle) as a PNG. Prefer this over the full screenshot: a single window is usually small enough to avoid vision downscaling, so it is sharp and its pixels map exactly to screen coordinates. The caption reports the window's screen origin so an in-image pixel (ix,iy) maps to click(x=left+ix, y=top+iy)."),
+			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			window, err := req.RequireString("window")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'window'"), nil
+			}
+			png, left, top, w, h, err := captureWindow(window)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("capture_window failed", err), nil
+			}
+			b64 := base64.StdEncoding.EncodeToString(png)
+			caption := fmt.Sprintf("Window %q. Screen origin (left=%d, top=%d), size %dx%d. "+
+				"To click an element at image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).",
+				window, left, top, w, h, left, top)
+			return mcp.NewToolResultImage(caption, b64, "image/png"), nil
+		},
+	)
+
 	// ---- Input tools (mouse / keyboard / scroll) ----
 
-	// click — move to (x,y) and click a mouse button (left/right/middle).
+	// click — move to (x,y) and click a mouse button, optionally holding modifiers.
 	s.AddTool(
 		mcp.NewTool("click",
-			mcp.WithDescription("Move the mouse to absolute screen pixel (x,y) and click. button is left (default), right, or middle."),
+			mcp.WithDescription("Move the mouse to absolute screen pixel (x,y) and click. button is left (default), right, or middle. Optional 'modifiers' holds keys during the click for multi-select, e.g. 'ctrl' or 'ctrl+shift' (ctrl-click / shift-click)."),
 			mcp.WithNumber("x", mcp.Description("Absolute X pixel on the virtual desktop."), mcp.Required()),
 			mcp.WithNumber("y", mcp.Description("Absolute Y pixel on the virtual desktop."), mcp.Required()),
 			mcp.WithString("button", mcp.Description("Mouse button: left (default), right, or middle.")),
+			mcp.WithString("modifiers", mcp.Description("Optional modifier keys held during the click, '+'-separated: ctrl, alt, shift, win. e.g. 'ctrl' or 'ctrl+shift'.")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			x, err := req.RequireInt("x")
@@ -131,10 +157,52 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultError("missing required argument 'y'"), nil
 			}
 			button := req.GetString("button", "left")
+			modStr := strings.TrimSpace(req.GetString("modifiers", ""))
+			if modStr != "" {
+				if err := mouseClickMods(x, y, button, strings.Split(modStr, "+")); err != nil {
+					return mcp.NewToolResultErrorFromErr("click failed", err), nil
+				}
+				return mcp.NewToolResultText(fmt.Sprintf("ok: %s+%s-clicked at (%d,%d)", modStr, button, x, y)), nil
+			}
 			if err := mouseClick(x, y, button); err != nil {
 				return mcp.NewToolResultErrorFromErr("click failed", err), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("ok: %s-clicked at (%d,%d)", button, x, y)), nil
+		},
+	)
+
+	// drag — press at (x1,y1), move to (x2,y2), release (rubber-band/slider/drag-drop).
+	s.AddTool(
+		mcp.NewTool("drag",
+			mcp.WithDescription("Press a mouse button at (x1,y1), drag to (x2,y2) through intermediate steps, then release. Use for rubber-band multi-select, sliders, drag & drop, and text selection. button is left (default), right, or middle."),
+			mcp.WithNumber("x1", mcp.Description("Start X pixel."), mcp.Required()),
+			mcp.WithNumber("y1", mcp.Description("Start Y pixel."), mcp.Required()),
+			mcp.WithNumber("x2", mcp.Description("End X pixel."), mcp.Required()),
+			mcp.WithNumber("y2", mcp.Description("End Y pixel."), mcp.Required()),
+			mcp.WithString("button", mcp.Description("Mouse button: left (default), right, or middle.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x1, err := req.RequireInt("x1")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x1'"), nil
+			}
+			y1, err := req.RequireInt("y1")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y1'"), nil
+			}
+			x2, err := req.RequireInt("x2")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x2'"), nil
+			}
+			y2, err := req.RequireInt("y2")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y2'"), nil
+			}
+			button := req.GetString("button", "left")
+			if err := mouseDrag(x1, y1, x2, y2, button); err != nil {
+				return mcp.NewToolResultErrorFromErr("drag failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: %s-dragged (%d,%d) -> (%d,%d)", button, x1, y1, x2, y2)), nil
 		},
 	)
 

@@ -245,8 +245,8 @@ func clickControl(window, text string, nth int) (string, error) {
 	if err := mouseClick(c.CenterX(), c.CenterY(), "left"); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("clicked %s %q at (%d,%d) [%d match(es); nth=%d]",
-		c.Class, c.Text, c.CenterX(), c.CenterY(), len(matches), nth), nil
+	return fmt.Sprintf("clicked %s %q at (%d,%d) [%d match(es); nth=%d]%s",
+		c.Class, c.Text, c.CenterX(), c.CenterY(), len(matches), nth, uipiWarning(top)), nil
 }
 
 // forceForeground brings target to the foreground, working around the Windows

@@ -97,14 +97,40 @@ func captureScreen() ([]byte, error) {
 	y, _, _ := procGetSystemMetrics.Call(smYVirtualScreen)
 	w, _, _ := procGetSystemMetrics.Call(smCXVirtualScreen)
 	h, _, _ := procGetSystemMetrics.Call(smCYVirtualScreen)
+	return captureRegion(int32(x), int32(y), int(int32(w)), int(int32(h)))
+}
 
-	width := int(int32(w))
-	height := int(int32(h))
-	originX := int32(x)
-	originY := int32(y)
-	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("captureScreen: invalid virtual screen size %dx%d", width, height)
+// captureWindow captures just the target window's screen rectangle and returns
+// the PNG plus the window's top-left screen origin (so an in-image pixel (ix,iy)
+// maps to screen (left+ix, top+iy)). Cropping to one window keeps the image small
+// — often under the vision downscale cap — so it stays sharp and pixel-accurate.
+func captureWindow(titleOrHwnd string) (png []byte, left, top, width, height int, err error) {
+	ensureDPIAware()
+	hwnd, ok := findTopWindow(titleOrHwnd)
+	if !ok {
+		return nil, 0, 0, 0, 0, fmt.Errorf("captureWindow: no window matching %q", titleOrHwnd)
 	}
+	rc := windowRect(hwnd)
+	width = int(rc.Right - rc.Left)
+	height = int(rc.Bottom - rc.Top)
+	if width <= 0 || height <= 0 {
+		return nil, 0, 0, 0, 0, fmt.Errorf("captureWindow: window %q has zero size", titleOrHwnd)
+	}
+	png, err = captureRegion(rc.Left, rc.Top, width, height)
+	if err != nil {
+		return nil, 0, 0, 0, 0, err
+	}
+	return png, int(rc.Left), int(rc.Top), width, height, nil
+}
+
+// captureRegion BitBlts a rectangle of the screen (source top-left at srcX,srcY in
+// screen coordinates) into a width×height bitmap and returns it as PNG bytes.
+func captureRegion(srcX, srcY int32, width, height int) ([]byte, error) {
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("captureRegion: invalid size %dx%d", width, height)
+	}
+	originX := srcX
+	originY := srcY
 
 	// Source DC for the whole screen (GetDC(NULL)).
 	screenDC, _, _ := procGetDC.Call(0)

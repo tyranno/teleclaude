@@ -23,6 +23,10 @@ func screenSystemPrompt() string {
 		"3. (3순위, 최후) snapshot도 win_controls도 안 되는 커스텀 렌더 영역만 screenshot으로 화면을 보고 click(x,y)/type/key/scroll. " +
 		"screenshot은 토큰이 크니 꼭 필요할 때만 쓴다.\n" +
 		"4. 고정 좌표는 preset_save로 등록하고 preset_click/preset_list로 재사용하라.\n" +
+		"5. 속도: 화면 변화 감지는 screenshot(느림) 대신 win_controls를 다시 호출해 보이는 컨트롤 집합의 변화로 판단하라(수 ms). " +
+		"한 번의 답변에서 여러 클릭/감지를 묶어 처리해 LLM 왕복을 줄여라.\n" +
+		"6. 대상 앱이 관리자 권한이면 일반 권한 클릭은 UIPI로 무시된다. click_control 결과에 UIPI 경고가 보이면 " +
+		"screen_control.elevated를 켜고 teleclaude를 관리자로 실행해야 한다.\n" +
 		"Always prefer snapshot/invoke, then win_controls/click_control, then screenshot+click as the last resort."
 }
 

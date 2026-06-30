@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -255,6 +256,102 @@ func mouseClick(x, y int, button string) error {
 	buf = append(buf, mouseEvent(ax, ay, 0, down|abs)...)
 	buf = append(buf, mouseEvent(ax, ay, 0, up|abs)...)
 	return sendInputs(buf, 3)
+}
+
+// resolveButton maps a button name to its down/up MOUSEEVENTF flags.
+func resolveButton(button string) (down, up uint32, err error) {
+	switch strings.ToLower(strings.TrimSpace(button)) {
+	case "", "left":
+		return mouseeventfLeftDown, mouseeventfLeftUp, nil
+	case "right":
+		return mouseeventfRightDown, mouseeventfRightUp, nil
+	case "middle":
+		return mouseeventfMiddleDown, mouseeventfMiddleUp, nil
+	default:
+		return 0, 0, fmt.Errorf("unknown mouse button %q (want left/right/middle)", button)
+	}
+}
+
+// mouseClickMods clicks at (x,y) while holding the given modifier keys (any of
+// ctrl/alt/shift/win) down — e.g. ctrl+click or shift+click for multi-select.
+// Keyboard and mouse events are sent as one ordered SendInput batch.
+func mouseClickMods(x, y int, button string, mods []string) error {
+	ensureDPIAware()
+	down, up, err := resolveButton(button)
+	if err != nil {
+		return err
+	}
+	var modVKs []uint16
+	for _, m := range mods {
+		m = strings.ToLower(strings.TrimSpace(m))
+		if m == "" {
+			continue
+		}
+		vk, ok := modVK[m]
+		if !ok {
+			return fmt.Errorf("unknown modifier %q (want ctrl/alt/shift/win)", m)
+		}
+		modVKs = append(modVKs, vk)
+	}
+	if len(modVKs) == 0 {
+		return mouseClick(x, y, button)
+	}
+
+	ax, ay := toAbsolute(x, y)
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+
+	var buf []byte
+	count := 0
+	for _, vk := range modVKs {
+		buf = append(buf, keyEvent(vk, 0, 0)...)
+		count++
+	}
+	buf = append(buf, mouseEvent(ax, ay, 0, mouseeventfMove|abs)...)
+	buf = append(buf, mouseEvent(ax, ay, 0, down|abs)...)
+	buf = append(buf, mouseEvent(ax, ay, 0, up|abs)...)
+	count += 3
+	for i := len(modVKs) - 1; i >= 0; i-- {
+		buf = append(buf, keyEvent(modVKs[i], 0, keyeventfKeyUp)...)
+		count++
+	}
+	return sendInputs(buf, count)
+}
+
+// mouseDrag presses button at (x1,y1), moves through interpolated steps to
+// (x2,y2), then releases — for rubber-band selection, sliders, and drag & drop.
+// Small delays between phases make the gesture register reliably across apps.
+func mouseDrag(x1, y1, x2, y2 int, button string) error {
+	ensureDPIAware()
+	down, up, err := resolveButton(button)
+	if err != nil {
+		return err
+	}
+	abs := uint32(mouseeventfAbsolute | mouseeventfVirtualDesk)
+
+	ax1, ay1 := toAbsolute(x1, y1)
+	if err := sendInputs(mouseEvent(ax1, ay1, 0, mouseeventfMove|abs), 1); err != nil {
+		return err
+	}
+	time.Sleep(15 * time.Millisecond)
+	if err := sendInputs(mouseEvent(ax1, ay1, 0, down|abs), 1); err != nil {
+		return err
+	}
+	time.Sleep(15 * time.Millisecond)
+
+	const steps = 12
+	for i := 1; i <= steps; i++ {
+		xi := x1 + (x2-x1)*i/steps
+		yi := y1 + (y2-y1)*i/steps
+		axi, ayi := toAbsolute(xi, yi)
+		if err := sendInputs(mouseEvent(axi, ayi, 0, mouseeventfMove|abs), 1); err != nil {
+			return err
+		}
+		time.Sleep(8 * time.Millisecond)
+	}
+
+	ax2, ay2 := toAbsolute(x2, y2)
+	time.Sleep(15 * time.Millisecond)
+	return sendInputs(mouseEvent(ax2, ay2, 0, up|abs), 1)
 }
 
 // mouseDouble performs a left double-click at (x,y).

@@ -20,6 +20,7 @@ func TestYAMLRoundTrip(t *testing.T) {
 		AllowScripts:      false,
 		ScreenControl:     true,
 		ScreenPresetsFile: "",
+		ScreenElevated:    true,
 	}
 	b, err := marshalConfigYAML(c)
 	if err != nil {
@@ -33,7 +34,8 @@ func TestYAMLRoundTrip(t *testing.T) {
 		len(got.AllowedUserIDs) != 2 || got.AllowedUserIDs[1] != 222 ||
 		got.WorkerModel != "sonnet" || got.ManagerAlways != false ||
 		got.ClaudeOauthToken != "sk-ant-oat01-X" || got.DefaultBackend != "claude" ||
-		got.MaxWorkers != 3 || got.RateLimitPerMin != 20 || got.ScreenControl != true {
+		got.MaxWorkers != 3 || got.RateLimitPerMin != 20 || got.ScreenControl != true ||
+		got.ScreenElevated != true {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 }

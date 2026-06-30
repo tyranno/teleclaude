@@ -42,6 +42,7 @@ type yamlConfig struct {
 	ScreenControl struct {
 		Enabled     bool   `yaml:"enabled"`
 		PresetsFile string `yaml:"presets_file"`
+		Elevated    bool   `yaml:"elevated"`
 	} `yaml:"screen_control"`
 }
 
@@ -92,6 +93,7 @@ func yamlToConfig(y *yamlConfig) *Config {
 	}
 	c.ScreenControl = y.ScreenControl.Enabled
 	c.ScreenPresetsFile = y.ScreenControl.PresetsFile
+	c.ScreenElevated = y.ScreenControl.Elevated
 	return c
 }
 
@@ -118,6 +120,7 @@ func configToYAML(c *Config) *yamlConfig {
 	y.Scripts.AllowedCommands = c.AllowedScriptCommands
 	y.ScreenControl.Enabled = c.ScreenControl
 	y.ScreenControl.PresetsFile = c.ScreenPresetsFile
+	y.ScreenControl.Elevated = c.ScreenElevated
 	return y
 }
 
