@@ -24,10 +24,10 @@ type Manager struct {
 	store        StoreRepo
 	workerStatus WorkerStatusStore
 	scheduler    *Scheduler
-	cfg          *Config
+	cfgh         *ConfigHolder
 }
 
-func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfg *Config) *Manager {
+func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfgh *ConfigHolder) *Manager {
 	return &Manager{
 		client:       claude,
 		backendName:  "claude",
@@ -35,9 +35,11 @@ func NewManager(claude ClaudeClient, codex ClaudeClient, store StoreRepo, cfg *C
 		codexClient:  codex,
 		store:        store,
 		workerStatus: NewMemoryWorkerStatusStore(),
-		cfg:          cfg,
+		cfgh:         cfgh,
 	}
 }
+
+func (m *Manager) cfg() *Config { return m.cfgh.Get() }
 
 func (m *Manager) SetScheduler(s *Scheduler) { m.scheduler = s }
 
@@ -49,14 +51,14 @@ func (m *Manager) SetBackend(name string) error {
 	case "claude":
 		m.client = m.claudeClient
 		m.backendName = "claude"
-		log.Printf("[manager] backend → claude (worker_model=%q)", m.cfg.WorkerModel)
+		log.Printf("[manager] backend → claude (worker_model=%q)", m.cfg().WorkerModel)
 	case "codex":
 		if m.codexClient == nil {
 			return fmt.Errorf("Codex가 설치되어 있지 않습니다")
 		}
 		m.client = m.codexClient
 		m.backendName = "codex"
-		log.Printf("[manager] backend → codex (codex_model=%q codex_manager_model=%q)", m.cfg.CodexModel, m.cfg.CodexManagerModel)
+		log.Printf("[manager] backend → codex (codex_model=%q codex_manager_model=%q)", m.cfg().CodexModel, m.cfg().CodexManagerModel)
 	default:
 		return fmt.Errorf("알 수 없는 백엔드: %s (claude | codex)", name)
 	}
@@ -228,7 +230,7 @@ func (m *Manager) Handle(ctx context.Context, chatID int64, text string, s Messa
 // decide returns the routing decision. With ManagerAlways=false it reuses the active
 // conversation without a Manager call when one is set (token-saving optimization).
 func (m *Manager) decide(ctx context.Context, client ClaudeClient, text string) (RouteDecision, bool) {
-	if !m.cfg.ManagerAlways {
+	if !m.cfg().ManagerAlways {
 		if active := m.store.GetActive(); active.Project != "" {
 			if _, exists := m.store.GetConversation(active.Project, active.ConversationID); exists {
 				return RouteDecision{Action: ActionResume, Project: active.Project, ConversationID: active.ConversationID}, true
@@ -307,9 +309,9 @@ func isContextOverflow(text string) bool {
 // workerModelForBackend returns the right model string based on the active backend.
 func (m *Manager) workerModelForBackend() string {
 	if m.Backend() == "codex" {
-		return m.cfg.CodexModel
+		return m.cfg().CodexModel
 	}
-	return m.cfg.WorkerModel
+	return m.cfg().WorkerModel
 }
 
 // runWorker executes the Worker turn for a resolved (project, conversation) and relays output.

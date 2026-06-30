@@ -39,7 +39,7 @@ func mgrFixture(t *testing.T, fc *fakeClaude) (*Manager, *fileStore, string) {
 		t.Fatal(err)
 	}
 	cfg := &Config{ManagerAlways: true}
-	return NewManager(fc, nil, st, cfg), st, dir
+	return NewManager(fc, nil, st, NewConfigHolder(cfg)), st, dir
 }
 
 func TestManager_New_CreatesConversationAndRuns(t *testing.T) {
@@ -143,7 +143,7 @@ func TestManager_NoProjects_Guides(t *testing.T) {
 	fc := &fakeClaude{}
 	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
 	_ = st.Load()
-	m := NewManager(fc, nil, st, &Config{ManagerAlways: true})
+	m := NewManager(fc, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
 	f := &fakeSender{}
 	m.Handle(context.Background(), 1, "hi", f)
 	if len(f.sent) != 1 || !contains(f.sent[0], "!project add") {
@@ -356,7 +356,7 @@ func TestSetBackend_Switch(t *testing.T) {
 	}
 	claude := &fakeClaude{}
 	codex := &fakeClaude{}
-	m := NewManager(claude, codex, st, &Config{ManagerAlways: true})
+	m := NewManager(claude, codex, st, NewConfigHolder(&Config{ManagerAlways: true}))
 
 	if m.Backend() != "claude" {
 		t.Fatal("default backend should be claude")
@@ -417,7 +417,7 @@ func TestHandleScheduledTask_AlphabeticalFallback(t *testing.T) {
 	// No active project set — Active.Project is "".
 
 	fc := &fakeClaude{runRes: RunResult{Text: "ok"}}
-	m := NewManager(fc, nil, st, &Config{ManagerAlways: true})
+	m := NewManager(fc, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
 	f := &fakeSender{}
 	m.HandleScheduledTask(context.Background(), 1, "morning summary", f)
 
@@ -434,7 +434,7 @@ func TestHandleScheduledTask_NoProjects(t *testing.T) {
 	fc := &fakeClaude{}
 	st := NewFileStore(filepath.Join(t.TempDir(), "store.json"))
 	_ = st.Load()
-	m := NewManager(fc, nil, st, &Config{})
+	m := NewManager(fc, nil, st, NewConfigHolder(&Config{}))
 	f := &fakeSender{}
 	m.HandleScheduledTask(context.Background(), 1, "hello", f)
 
@@ -452,7 +452,7 @@ func TestSetBackend_CodexUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	claude := &fakeClaude{}
-	m := NewManager(claude, nil, st, &Config{ManagerAlways: true})
+	m := NewManager(claude, nil, st, NewConfigHolder(&Config{ManagerAlways: true}))
 
 	if err := m.SetBackend("codex"); err == nil {
 		t.Error("expected error when codex not available")

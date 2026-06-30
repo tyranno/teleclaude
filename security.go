@@ -24,15 +24,22 @@ func NewRateLimiter(maxPerMin int) *RateLimiter {
 	}
 }
 
+// SetLimit updates the per-minute cap live (0 = unlimited).
+func (r *RateLimiter) SetLimit(maxPerMin int) {
+	r.mu.Lock()
+	r.maxPerMin = maxPerMin
+	r.mu.Unlock()
+}
+
 // Allow returns true and records the event if the user is within the rate limit.
 // Returns false without recording if the limit would be exceeded.
 // A maxPerMin of 0 means unlimited.
 func (r *RateLimiter) Allow(userID int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.maxPerMin <= 0 {
 		return true
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	now := time.Now()
 	cutoff := now.Add(-time.Minute)
 

@@ -16,13 +16,15 @@ import (
 
 type claudeRunner struct {
 	claudePath string
-	cfg        *Config
+	cfgh       *ConfigHolder
 }
 
 // NewClaudeRunner builds a ClaudeClient backed by the local claude CLI.
-func NewClaudeRunner(claudePath string, cfg *Config) *claudeRunner {
-	return &claudeRunner{claudePath: claudePath, cfg: cfg}
+func NewClaudeRunner(claudePath string, cfgh *ConfigHolder) *claudeRunner {
+	return &claudeRunner{claudePath: claudePath, cfgh: cfgh}
 }
+
+func (r *claudeRunner) cfg() *Config { return r.cfgh.Get() }
 
 // claudeEnvelope is the `claude -p --output-format json` result object (fields we use).
 // With --json-schema, the validated object lands in StructuredOutput (NOT Result).
@@ -49,8 +51,8 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 	prompt := buildRoutePrompt(req)
 	args := []string{"-p", prompt, "--output-format", "json", "--json-schema", routeJSONSchema}
 	args = append(args, isolationArgs...)
-	if r.cfg.ManagerModel != "" {
-		args = append(args, "--model", r.cfg.ManagerModel)
+	if r.cfg().ManagerModel != "" {
+		args = append(args, "--model", r.cfg().ManagerModel)
 	}
 
 	home, _ := os.UserHomeDir()
@@ -99,8 +101,8 @@ func (r *claudeRunner) exec(ctx context.Context, dir string, args []string) (std
 	// Inject the OAuth token so headless services (systemd, etc.) authenticate without
 	// any external env setup — `config.txt` is the single source of truth. Overrides a
 	// stale/expired ~/.claude/.credentials.json. Empty = use claude's own login.
-	if r.cfg != nil && r.cfg.ClaudeOauthToken != "" {
-		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+r.cfg.ClaudeOauthToken)
+	if c := r.cfg(); c != nil && c.ClaudeOauthToken != "" {
+		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+c.ClaudeOauthToken)
 	}
 	// Kill the whole process tree on cancel (claude spawns node child processes on Windows).
 	cmd.Cancel = func() error { return killTree(cmd.Process.Pid) }

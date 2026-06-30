@@ -120,7 +120,7 @@ func TestManagerDescribeActiveWorkers(t *testing.T) {
 		client:       &fakeClaude{},
 		store:        NewFileStore("/tmp/test.json"),
 		workerStatus: store,
-		cfg:          cfg,
+		cfgh:         NewConfigHolder(cfg),
 	}
 
 	// No active workers

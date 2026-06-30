@@ -143,7 +143,9 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		return fmt.Errorf("대화 저장소 로드 실패: %w", err)
 	}
 
-	runner := NewClaudeRunner(claudePath, cfg)
+	holder := NewConfigHolder(cfg)
+
+	runner := NewClaudeRunner(claudePath, holder)
 	var codexRunner ClaudeClient
 	if codexPath, err := findCodex(cfg.CodexPath); err == nil && codexPath != "" {
 		codexRunner = NewCodexRunner(codexPath, cfg)
@@ -153,7 +155,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	} else {
 		log.Printf("[main] codex: 미설치 (선택적)")
 	}
-	manager := NewManager(runner, codexRunner, store, cfg)
+	manager := NewManager(runner, codexRunner, store, holder)
 
 	// Restore backend: persisted choice takes priority, then DEFAULT_BACKEND from config.
 	if saved := store.GetStoredBackend(); saved != "" && saved != "claude" {
@@ -201,7 +203,7 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 		log.Printf("[main] userstore load warning: %v", err)
 	}
 
-	bot := NewBot(api, cfg, store, manager, sched, userStore)
+	bot := NewBot(api, holder, store, manager, sched, userStore)
 
 	// Wire scheduler send/dispatch after bot is created
 	sched.SetSend(func(chatID int64, text string) { _ = bot.Send(chatID, text) })

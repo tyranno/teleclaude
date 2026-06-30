@@ -20,7 +20,7 @@ func intRunner(t *testing.T) *claudeRunner {
 		t.Skipf("claude not found: %v", err)
 	}
 	// Use haiku for both to keep the test cheap; we verify the mechanism, not output quality.
-	return NewClaudeRunner(path, &Config{ManagerModel: "haiku", WorkerModel: "haiku"})
+	return NewClaudeRunner(path, NewConfigHolder(&Config{ManagerModel: "haiku", WorkerModel: "haiku"}))
 }
 
 func TestIntegration_Route(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 // Instead they manipulate state directly to verify the pool invariants.
 func newParallelTestBot(maxWorkers int) *Bot {
 	return &Bot{
-		cfg:     &Config{MaxWorkers: maxWorkers, TimeoutMinutes: 1},
+		cfgh:    NewConfigHolder(&Config{MaxWorkers: maxWorkers, TimeoutMinutes: 1}),
 		cancels: make(map[int]context.CancelFunc),
 	}
 }
@@ -43,7 +43,7 @@ func TestBot_QueueWhenFull(t *testing.T) {
 	// Reproduce the queueing branch from dispatch().
 	msg := queuedMsg{chatID: 42, text: "overflow message"}
 	b.mu.Lock()
-	if b.activeCount >= b.cfg.MaxWorkers {
+	if b.activeCount >= b.cfg().MaxWorkers {
 		b.queue = append(b.queue, msg)
 	}
 	b.mu.Unlock()
@@ -79,7 +79,7 @@ func TestBot_SlotNotExceededUnderLoad(t *testing.T) {
 	for range 10 {
 		wg.Go(func() {
 			b.mu.Lock()
-			if b.activeCount < b.cfg.MaxWorkers {
+			if b.activeCount < b.cfg().MaxWorkers {
 				b.activeCount++
 				cur := b.activeCount
 				b.mu.Unlock()

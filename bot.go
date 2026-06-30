@@ -29,7 +29,7 @@ type queuedMsg struct {
 // Up to cfg.MaxWorkers (default 3) can run at the same time; extras are queued.
 type Bot struct {
 	api         *tgbotapi.BotAPI
-	cfg         *Config
+	cfgh        *ConfigHolder
 	store       StoreRepo
 	manager     *Manager
 	scheduler   *Scheduler
@@ -44,23 +44,25 @@ type Bot struct {
 	queue       []queuedMsg                // messages waiting for a free slot
 }
 
-func NewBot(api *tgbotapi.BotAPI, cfg *Config, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {
+func NewBot(api *tgbotapi.BotAPI, cfgh *ConfigHolder, store StoreRepo, manager *Manager, scheduler *Scheduler, userStore *UserStore) *Bot {
 	return &Bot{
 		api:         api,
-		cfg:         cfg,
+		cfgh:        cfgh,
 		store:       store,
 		manager:     manager,
 		scheduler:   scheduler,
-		rateLimiter: NewRateLimiter(cfg.RateLimitPerMin),
+		rateLimiter: NewRateLimiter(cfgh.Get().RateLimitPerMin),
 		userStore:   userStore,
 		cancels:     make(map[int]context.CancelFunc),
 	}
 }
 
+func (b *Bot) cfg() *Config { return b.cfgh.Get() }
+
 // isAllowed checks all auth sources: config IDs, config usernames, and runtime UserStore.
 func (b *Bot) isAllowed(userID int64, username string) bool {
-	return b.cfg.IsAllowed(userID) ||
-		b.cfg.IsAllowedByUsername(username) ||
+	return b.cfg().IsAllowed(userID) ||
+		b.cfg().IsAllowedByUsername(username) ||
 		(b.userStore != nil && b.userStore.Contains(userID))
 }
 
@@ -166,10 +168,10 @@ func (b *Bot) dispatchScheduledTask(chatID int64, text string) {
 // It acquires a worker slot (or queues the message) then runs the appropriate handler.
 func (b *Bot) dispatch(msg queuedMsg) {
 	b.mu.Lock()
-	if b.activeCount >= b.cfg.MaxWorkers {
+	if b.activeCount >= b.cfg().MaxWorkers {
 		b.queue = append(b.queue, msg)
 		pos := len(b.queue)
-		maxW := b.cfg.MaxWorkers
+		maxW := b.cfg().MaxWorkers
 		b.mu.Unlock()
 		if !msg.isTask {
 			_ = b.Send(msg.chatID, fmt.Sprintf(
@@ -184,7 +186,7 @@ func (b *Bot) dispatch(msg queuedMsg) {
 	wid := b.workerSeq
 	ctx, cancel := context.WithTimeout(
 		context.Background(),
-		time.Duration(b.cfg.TimeoutMinutes)*time.Minute,
+		time.Duration(b.cfg().TimeoutMinutes)*time.Minute,
 	)
 	b.activeCount++
 	b.cancels[wid] = cancel
@@ -251,7 +253,7 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		qLen := len(b.queue)
 		b.mu.Unlock()
 		if active > 0 {
-			msg += fmt.Sprintf("\n⚡ 동시 실행: %d/%d", active, b.cfg.MaxWorkers)
+			msg += fmt.Sprintf("\n⚡ 동시 실행: %d/%d", active, b.cfg().MaxWorkers)
 		}
 		if qLen > 0 {
 			msg += fmt.Sprintf("\n📋 대기 중: %d개", qLen)
@@ -802,7 +804,7 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 		if script == "clear" {
 			script = "\x00" // marker passed to UpdateTask to clear
 		} else if script != "" {
-			if verr := validateScript(b.cfg, script); verr != nil {
+			if verr := validateScript(b.cfg(), script); verr != nil {
 				_ = b.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
 				return
 			}
@@ -862,7 +864,7 @@ func (b *Bot) handleTask(chatID int64, _ string, fields []string) {
 			return
 		}
 		if script != "" {
-			if verr := validateScript(b.cfg, script); verr != nil {
+			if verr := validateScript(b.cfg(), script); verr != nil {
 				_ = b.Send(chatID, "⚠️ 스크립트 거부: "+verr.Error())
 				return
 			}
@@ -1387,7 +1389,7 @@ func (b *Bot) handleParallel(chatID int64, text string) {
 		return
 	}
 	// Cap to MaxWorkers to prevent unbounded resource / rate-limit bypass.
-	maxP := b.cfg.MaxWorkers
+	maxP := b.cfg().MaxWorkers
 	if maxP < 1 {
 		maxP = 1
 	}
@@ -1452,14 +1454,14 @@ func (b *Bot) handleUser(chatID int64, fields []string) {
 			_ = b.Send(chatID, "⚠️ 잘못된 사용자 ID: "+fields[2])
 			return
 		}
-		if b.cfg.IsAllowed(id) {
+		if b.cfg().IsAllowed(id) {
 			_ = b.Send(chatID, "⚠️ config.txt AllowedUserIDs에 있는 사용자는 !user remove로 제거할 수 없습니다.")
 			return
 		}
 		// Lockout guard: refuse if removing this ID would leave no allowed users.
 		runtimeAfter := b.userStore.List()
 		runtimeAfter = removeInt64(runtimeAfter, id)
-		if len(b.cfg.AllowedUserIDs) == 0 && len(b.cfg.AllowedUsernames) == 0 && len(runtimeAfter) == 0 {
+		if len(b.cfg().AllowedUserIDs) == 0 && len(b.cfg().AllowedUsernames) == 0 && len(runtimeAfter) == 0 {
 			_ = b.Send(chatID, "⚠️ 이 사용자를 제거하면 허용된 사용자가 없어져 봇이 잠깁니다. 먼저 다른 사용자를 추가하세요.")
 			return
 		}
@@ -1472,14 +1474,14 @@ func (b *Bot) handleUser(chatID int64, fields []string) {
 		var sb strings.Builder
 		sb.WriteString("👥 허용된 사용자:\n")
 		sb.WriteString("  [config] IDs: ")
-		for i, id := range b.cfg.AllowedUserIDs {
+		for i, id := range b.cfg().AllowedUserIDs {
 			if i > 0 {
 				sb.WriteString(", ")
 			}
 			fmt.Fprintf(&sb, "%d", id)
 		}
-		if len(b.cfg.AllowedUsernames) > 0 {
-			sb.WriteString("\n  [config] 유저네임: @" + strings.Join(b.cfg.AllowedUsernames, ", @"))
+		if len(b.cfg().AllowedUsernames) > 0 {
+			sb.WriteString("\n  [config] 유저네임: @" + strings.Join(b.cfg().AllowedUsernames, ", @"))
 		}
 		runtimeIDs := b.userStore.List()
 		if len(runtimeIDs) > 0 {
