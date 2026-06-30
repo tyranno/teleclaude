@@ -67,7 +67,7 @@ go build -o teleclaude.exe .
 
 1. 텔레그램에서 [@BotFather](https://t.me/BotFather) 열기 → `/newbot`
 2. 봇 표시 이름 입력 → username 입력 (**반드시 `bot`으로 끝나야 함**, 예: `DwNoteDevBot`)
-3. 발급된 **토큰** 복사 (형식: `8980469547:AAF-...`)
+3. 발급된 **토큰** 복사 (형식: `123456789:AAH...`)
 
 > ⚠️ 토큰은 비밀번호입니다. 노출되면 BotFather `/revoke`로 즉시 재발급하세요.
 > 기존에 다른 봇(OpenClaw 등)이 있다면 **충돌 방지를 위해 새 봇**을 권장합니다.
@@ -96,7 +96,7 @@ curl.exe -s "https://api.telegram.org/bot<토큰>/getUpdates"
 ## 4. 설정 파일 `%USERPROFILE%\.teleclaude\config.txt`
 
 ```ini
-TELEGRAM_BOT_TOKEN=8980469547:AAF-...        # 필수
+TELEGRAM_BOT_TOKEN=123456789:AAH...        # 필수
 ALLOWED_USER_IDS=6723802240                  # 필수, 쉼표로 여러 명 가능
 # --- 선택 ---
 MANAGER_MODEL=haiku        # 라우팅용 경량 모델 (기본 haiku, 저렴·빠름)

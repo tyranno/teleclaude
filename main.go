@@ -63,7 +63,7 @@ func main() {
 			log.Fatalf("설정 마법사 중단: %v", err)
 		}
 	case "version", "--version", "-v":
-		fmt.Println("teleclaude 0.1.0")
+		fmt.Println("teleclaude 0.2.0")
 	default:
 		fmt.Println("usage: teleclaude [run [config-path]] | setup [config-path] | version")
 	}
