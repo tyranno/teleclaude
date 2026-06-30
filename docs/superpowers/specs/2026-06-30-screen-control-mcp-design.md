@@ -85,3 +85,15 @@ teleclaude(Windows)가 **자체 Go 네이티브 화면제어 MCP 서버**를 내
 
 ## 7. 다음 (M2)
 패킷 캡처(dumpcap/tshark 또는 자체) + 기능별 패킷 상관 + 자율 메뉴 스윕 리포트.
+
+## 8. M1 구현 결과 (실측 반영, 2026-06-30)
+설계의 UIA-우선 외에, 실제 타깃(NetGuard Lite = 커스텀 렌더 + 관리자 권한)을 다루며 다음이 추가/확정됨:
+
+- **`win_controls` / `click_control`**: UIA가 비어도 표준 Win32 자식창(Button/SysTreeView32/SysListView32/Edit)이 있으면 `EnumChildWindows`+`GetWindowRect`로 **정확 좌표+라벨**을 얻어 라벨로 클릭. 비전 추정 불필요(저토큰·멀티모니터 무관). 우선순위: snapshot(UIA) → win_controls → screenshot.
+- **`capture_window`**: 대상 창만 크롭 캡처(보통 비전 다운스케일 한계 미만이라 선명+픽셀정확). 전체 스크린샷은 다운스케일로 좌표 부정확.
+- **`confirm_dialogs`**: 앱의 "전송하시겠습니까?" 등 확인창(연쇄 포함)을 예/확인 자동 클릭 → 무인 연속 스윕 가능.
+- **`drag`, click `modifiers`(ctrl/shift)**: 러버밴드 다중선택·슬라이더·드래그드롭, 다중선택.
+- **`launch_app(name, elevated)`**: 임의 앱 이름으로 실행(시작메뉴/Program Files/PATH 검색); elevated=true면 runas(UAC). 앱별 하드코딩 없음.
+- **UIPI/권한 (`screen_control.elevated`)**: 관리자 권한 대상 앱은 일반 권한 클릭이 UIPI로 무음 차단됨(이동은 됨). teleclaude를 관리자로 실행해야 제어 가능 — `screen_control.elevated`면 시작 시 UAC로 자기 승격, 이후 launch한 앱도 권한 상속.
+- **속도**: 조작 레이어 ms급(enumControls ~8ms, 클릭→변화감지 ~10ms). 병목은 LLM 비전 턴 → 변화감지는 win_controls(텍스트)로.
+- **M2 패킷 캡처**: teleclaude에 내장하지 않음. 워커가 Bash로 외부 dumpcap/tshark를 실행하고 결과를 읽어 분석(teleclaude=오케스트레이터). end-to-end 실증 완료(예: "CH2 ON" → `0f0603620100 28ee` 전송 확인).
