@@ -319,6 +319,71 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// ---- Win32 child-window controls (works when UIA is empty) ----
+
+	// win_controls — enumerate a window's real Win32 child controls with exact
+	// screen coordinates. Use this when snapshot (UIA) returns nothing but the
+	// app is native (buttons/tree/list are real child windows). Cheaper and far
+	// more reliable than screenshot+vision for clicking by label.
+	s.AddTool(
+		mcp.NewTool("win_controls",
+			mcp.WithDescription("List a window's Win32 child controls with EXACT screen coordinates: 'class | \"label\" | center(x,y) | WxH'. Use the reported center as click(x,y), or use click_control to click by label. Works for native apps (buttons, SysTreeView32, SysListView32, Edit) even when snapshot/UIA returns nothing. By default only currently-visible controls are listed; set include_hidden=true to see controls on inactive panels/tabs."),
+			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd (e.g. 'NetGuard')."), mcp.Required()),
+			mcp.WithBoolean("include_hidden", mcp.Description("Include controls that are not currently visible (other tabs/panels). Default false.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			window, err := req.RequireString("window")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'window'"), nil
+			}
+			includeHidden := req.GetBool("include_hidden", false)
+			ctrls, err := listControls(window, includeHidden)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("win_controls failed", err), nil
+			}
+			if len(ctrls) == 0 {
+				return mcp.NewToolResultText("(no child controls found)"), nil
+			}
+			var b strings.Builder
+			for _, c := range ctrls {
+				vis := ""
+				if !c.Visible {
+					vis = " [hidden]"
+				}
+				fmt.Fprintf(&b, "%s | %q | center(%d,%d) | %dx%d%s\n",
+					c.Class, c.Text, c.CenterX(), c.CenterY(),
+					c.Right-c.Left, c.Bottom-c.Top, vis)
+			}
+			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
+		},
+	)
+
+	// click_control — click a child control by its label (exact coords, no vision).
+	s.AddTool(
+		mcp.NewTool("click_control",
+			mcp.WithDescription("Find a visible Win32 child control by its label text (case-insensitive substring) in the given window and left-click its center. The window is focused first. If multiple controls share the label, use 'nth' (0-based) to pick which one — list them first with win_controls. Preferred over click(x,y) for native apps."),
+			mcp.WithString("window", mcp.Description("Target window: title substring or hwnd."), mcp.Required()),
+			mcp.WithString("text", mcp.Description("Control label to match (e.g. '로컬장치 검색', 'File')."), mcp.Required()),
+			mcp.WithNumber("nth", mcp.Description("0-based index when several controls share the label (default 0).")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			window, err := req.RequireString("window")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'window'"), nil
+			}
+			text, err := req.RequireString("text")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'text'"), nil
+			}
+			nth := req.GetInt("nth", 0)
+			desc, err := clickControl(window, text, nth)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("click_control failed", err), nil
+			}
+			return mcp.NewToolResultText("ok: " + desc), nil
+		},
+	)
+
 	// ---- UIA (UI Automation) tools — preferred over screenshot/click ----
 
 	// snapshot — read the foreground window's UIA element tree as text.

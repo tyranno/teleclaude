@@ -24,8 +24,11 @@ var (
 	modKernel32App = windows.NewLazySystemDLL("kernel32.dll")
 
 	procEnumWindows         = modUser32.NewProc("EnumWindows")
+	procEnumChildWindows    = modUser32.NewProc("EnumChildWindows")
 	procGetWindowTextW      = modUser32.NewProc("GetWindowTextW")
 	procGetWindowTextLength = modUser32.NewProc("GetWindowTextLengthW")
+	procGetClassNameW       = modUser32.NewProc("GetClassNameW")
+	procGetWindowRect       = modUser32.NewProc("GetWindowRect")
 	procIsWindowVisible     = modUser32.NewProc("IsWindowVisible")
 	procSetForegroundWindow = modUser32.NewProc("SetForegroundWindow")
 	procShowWindow          = modUser32.NewProc("ShowWindow")
@@ -91,45 +94,159 @@ func focusWindow(titleOrHwnd string) error {
 	if s == "" {
 		return fmt.Errorf("focus_window: empty title/hwnd")
 	}
-
-	var target uintptr
-
-	// Try to interpret the input as an HWND first.
-	if h, ok := parseHWND(s); ok {
-		target = h
-	} else {
-		// Match by title substring (case-insensitive). Prefer an exact match.
-		wins := enumWindows()
-		needle := strings.ToLower(s)
-		var exact, partial uintptr
-		for _, w := range wins {
-			lt := strings.ToLower(w.Title)
-			if lt == needle && exact == 0 {
-				exact = w.HWND
-			}
-			if strings.Contains(lt, needle) && partial == 0 {
-				partial = w.HWND
-			}
-		}
-		if exact != 0 {
-			target = exact
-		} else {
-			target = partial
-		}
-	}
-
-	if target == 0 {
+	target, ok := findTopWindow(s)
+	if !ok {
 		return fmt.Errorf("focus_window: no window matching %q", s)
 	}
-
-	// Restore if minimized, then bring to foreground.
-	if iconic, _, _ := procIsIconic.Call(target); iconic != 0 {
-		procShowWindow.Call(target, swRestore)
-	}
-	if err := forceForeground(target); err != nil {
+	if err := bringToFront(target); err != nil {
 		return fmt.Errorf("focus_window: %w (window %q)", err, s)
 	}
 	return nil
+}
+
+// findTopWindow resolves titleOrHwnd to a top-level window handle. The input may
+// be an hwnd ("0x1234"/decimal) or a title substring (case-insensitive); an
+// exact title match wins over a partial one.
+func findTopWindow(titleOrHwnd string) (uintptr, bool) {
+	s := strings.TrimSpace(titleOrHwnd)
+	if s == "" {
+		return 0, false
+	}
+	if h, ok := parseHWND(s); ok {
+		return h, true
+	}
+	wins := enumWindows()
+	needle := strings.ToLower(s)
+	var exact, partial uintptr
+	for _, w := range wins {
+		lt := strings.ToLower(w.Title)
+		if lt == needle && exact == 0 {
+			exact = w.HWND
+		}
+		if strings.Contains(lt, needle) && partial == 0 {
+			partial = w.HWND
+		}
+	}
+	if exact != 0 {
+		return exact, true
+	}
+	if partial != 0 {
+		return partial, true
+	}
+	return 0, false
+}
+
+// bringToFront restores (if minimized) and foregrounds a window handle.
+func bringToFront(hwnd uintptr) error {
+	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
+		procShowWindow.Call(hwnd, swRestore)
+	}
+	return forceForeground(hwnd)
+}
+
+// rect mirrors the Win32 RECT struct (screen coordinates).
+type rect struct{ Left, Top, Right, Bottom int32 }
+
+// control is one Win32 child-window control with its screen rectangle. For many
+// native apps (incl. NetGuard Lite) the real interactive controls are standard
+// child windows even when UIA exposes nothing — so EnumChildWindows yields exact
+// coordinates and labels without any vision/coordinate guessing.
+type control struct {
+	Class                    string
+	Text                     string
+	Left, Top, Right, Bottom int32
+	Visible                  bool
+}
+
+// CenterX/CenterY are the click target for the control.
+func (c control) CenterX() int { return int((c.Left + c.Right) / 2) }
+func (c control) CenterY() int { return int((c.Top + c.Bottom) / 2) }
+
+// getClassName reads a window's class name (e.g. "Button", "SysTreeView32").
+func getClassName(hwnd uintptr) string {
+	buf := make([]uint16, 256)
+	r, _, _ := procGetClassNameW.Call(hwnd, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	return windows.UTF16ToString(buf[:r])
+}
+
+// windowRect returns a window's screen rectangle via GetWindowRect.
+func windowRect(hwnd uintptr) rect {
+	var rc rect
+	procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
+	return rc
+}
+
+// enumControls returns the descendant child-window controls of a top-level
+// window. When includeHidden is false only currently-visible controls (the
+// active panel/tab) are returned, which keeps the list small and token-cheap.
+func enumControls(top uintptr, includeHidden bool) []control {
+	var out []control
+	cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
+		vis := false
+		if v, _, _ := procIsWindowVisible.Call(hwnd); v != 0 {
+			vis = true
+		}
+		if !vis && !includeHidden {
+			return 1 // continue
+		}
+		rc := windowRect(hwnd)
+		out = append(out, control{
+			Class:   getClassName(hwnd),
+			Text:    getWindowText(hwnd),
+			Left:    rc.Left,
+			Top:     rc.Top,
+			Right:   rc.Right,
+			Bottom:  rc.Bottom,
+			Visible: vis,
+		})
+		return 1
+	})
+	procEnumChildWindows.Call(top, cb, 0)
+	return out
+}
+
+// listControls resolves a window then returns its child controls.
+func listControls(window string, includeHidden bool) ([]control, error) {
+	top, ok := findTopWindow(window)
+	if !ok {
+		return nil, fmt.Errorf("no window matching %q", window)
+	}
+	return enumControls(top, includeHidden), nil
+}
+
+// clickControl finds the nth (0-based) VISIBLE control in window whose label
+// contains text (case-insensitive) and left-clicks its center. The window is
+// brought to the foreground first so the click lands on it.
+func clickControl(window, text string, nth int) (string, error) {
+	top, ok := findTopWindow(window)
+	if !ok {
+		return "", fmt.Errorf("no window matching %q", window)
+	}
+	if err := bringToFront(top); err != nil {
+		return "", fmt.Errorf("focus %q: %w", window, err)
+	}
+	needle := strings.ToLower(strings.TrimSpace(text))
+	if needle == "" {
+		return "", fmt.Errorf("empty control text")
+	}
+	var matches []control
+	for _, c := range enumControls(top, false) {
+		if strings.Contains(strings.ToLower(c.Text), needle) {
+			matches = append(matches, c)
+		}
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no visible control with text containing %q in %q", text, window)
+	}
+	if nth < 0 || nth >= len(matches) {
+		nth = 0
+	}
+	c := matches[nth]
+	if err := mouseClick(c.CenterX(), c.CenterY(), "left"); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("clicked %s %q at (%d,%d) [%d match(es); nth=%d]",
+		c.Class, c.Text, c.CenterX(), c.CenterY(), len(matches), nth), nil
 }
 
 // forceForeground brings target to the foreground, working around the Windows

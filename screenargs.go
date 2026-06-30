@@ -14,13 +14,16 @@ import "encoding/json"
 // for fixed positions.
 func screenSystemPrompt() string {
 	return "" +
-		"You can control this Windows desktop via the `screen` MCP tools. Follow this learned workflow:\n" +
-		"0. 앱을 띄울 때는 launch_app(name)으로 실행하고, 대상 앱을 조작하기 전에 먼저 focus_window로 창을 앞으로 가져와라.\n" +
-		"1. 먼저 snapshot(UIA)로 요소를 확인하고 invoke/set_value(이름)로 조작하라. snapshot에 내부 컨트롤이 거의 없으면" +
-		"(커스텀 렌더 앱) screenshot으로 화면을 보고 click(x,y) 또는 저장된 preset_click을 써라.\n" +
-		"2. screenshot은 토큰이 크니 UIA로 안 되는 경우에만. screenshot으로 화면을 본 뒤 click(x,y) / type / key / scroll을 써라.\n" +
-		"3. 고정 레이아웃은 preset_save로 좌표를 등록해두고 preset_click(또는 preset_list)으로 재사용하라.\n" +
-		"Always prefer snapshot+invoke over screenshot+click."
+		"You can control this Windows desktop via the `screen` MCP tools. Prefer cheap, coordinate-free methods; use vision only as a last resort.\n" +
+		"0. 앱은 launch_app(name)으로 실행하고, 대상 앱을 조작하기 전에 먼저 focus_window로 창을 앞으로 가져와라.\n" +
+		"1. (1순위) snapshot(UIA)로 요소를 확인하고 invoke/set_value(이름)로 조작하라 — 가장 싸고 정확하다.\n" +
+		"2. (2순위) snapshot이 비어있거나 거의 없으면 win_controls(window)로 Win32 자식 컨트롤의 정확한 좌표를 얻어라. " +
+		"버튼/트리/리스트가 라벨과 함께 center(x,y) 좌표로 나온다. 라벨로 누르려면 click_control(window, text[, nth]), " +
+		"좌표로 누르려면 click(x,y)를 그 center 좌표로 호출하라. 이미지 추정이 아니라 OS가 준 정확한 좌표라 신뢰도가 높다.\n" +
+		"3. (3순위, 최후) snapshot도 win_controls도 안 되는 커스텀 렌더 영역만 screenshot으로 화면을 보고 click(x,y)/type/key/scroll. " +
+		"screenshot은 토큰이 크니 꼭 필요할 때만 쓴다.\n" +
+		"4. 고정 좌표는 preset_save로 등록하고 preset_click/preset_list로 재사용하라.\n" +
+		"Always prefer snapshot/invoke, then win_controls/click_control, then screenshot+click as the last resort."
 }
 
 // mcpServerSpec is one entry under mcpServers in an inline --mcp-config.
