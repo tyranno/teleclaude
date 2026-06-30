@@ -1,1 +1,0 @@
-- [project-overview](project-overview.md) — teleclaude Go CLI: Telegram↔Claude bridge, config hot-reload via fsnotify + atomic ConfigHolder

@@ -23,3 +23,6 @@ test_flow.ps1
 # OS
 Thumbs.db
 .DS_Store
+
+# Subagent-generated memory (not part of the project)
+.claude/agent-memory/
