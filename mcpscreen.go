@@ -53,13 +53,17 @@ func RunMCPScreen() error {
 				mcp.Description("Application name to launch (e.g. 'Calculator', 'Notepad', 'Chrome')."),
 				mcp.Required(),
 			),
+			mcp.WithBoolean("elevated",
+				mcp.Description("Launch with administrator rights via a UAC prompt (the user approves it). NOTE: to then click/control the elevated app, teleclaude itself must also be elevated (Windows UIPI). Default false."),
+			),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			name, err := req.RequireString("name")
 			if err != nil {
 				return mcp.NewToolResultError("missing required argument 'name'"), nil
 			}
-			desc, err := launchApp(name)
+			elevated := req.GetBool("elevated", false)
+			desc, err := launchApp(name, elevated)
 			if err != nil {
 				return mcp.NewToolResultErrorFromErr("launch_app failed", err), nil
 			}

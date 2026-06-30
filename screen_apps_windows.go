@@ -313,11 +313,35 @@ var appAliases = map[string]string{
 // On total failure it returns an error listing what was tried — it never relies
 // on a path that pops a GUI "not found" dialog without also reporting failure.
 //
+// When elevated is true the app is launched via the "runas" verb (UAC prompt the
+// user approves), so it runs with administrator rights. NOTE: to then CLICK an
+// elevated app, teleclaude itself must also be elevated (Windows UIPI) — the
+// cleanest setup is screen_control.elevated, after which normal launches already
+// inherit elevation and this flag is unnecessary.
+//
 // CGO-free; uses os/exec.
-func launchApp(name string) (string, error) {
+func launchApp(name string, elevated bool) (string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "", fmt.Errorf("launch_app: empty name")
+	}
+
+	if elevated {
+		// Resolve the best concrete target, then launch it elevated via runas.
+		target := name
+		if exeName, ok := appAliases[strings.ToLower(name)]; ok {
+			target = exeName
+		} else if lnk := findStartMenuShortcut(name); lnk != "" {
+			target = lnk
+		} else if p, err := exec.LookPath(name); err == nil {
+			target = p
+		} else if p, err := exec.LookPath(name + ".exe"); err == nil {
+			target = p
+		}
+		if err := runAsAdmin(target, ""); err != nil {
+			return "", fmt.Errorf("launch_app(elevated): runas %q failed: %w", target, err)
+		}
+		return fmt.Sprintf("launched as administrator (UAC) : %s", target), nil
 	}
 
 	var tried []string

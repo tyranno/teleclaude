@@ -23,6 +23,23 @@ func isElevated() bool {
 	return windows.GetCurrentProcessToken().IsElevated()
 }
 
+// runAsAdmin launches target (an exe path, a .lnk, or an app name the shell can
+// resolve) elevated via the "runas" verb, triggering a UAC prompt the user must
+// approve. args may be empty.
+func runAsAdmin(target, args string) error {
+	verbPtr, _ := windows.UTF16PtrFromString("runas")
+	tgtPtr, err := windows.UTF16PtrFromString(target)
+	if err != nil {
+		return err
+	}
+	var argsPtr *uint16
+	if args != "" {
+		argsPtr, _ = windows.UTF16PtrFromString(args)
+	}
+	const swShowNormal = 1
+	return windows.ShellExecute(0, verbPtr, tgtPtr, argsPtr, nil, swShowNormal)
+}
+
 // relaunchElevated re-launches this executable with the same arguments under the
 // "runas" verb, triggering a one-time UAC prompt. The caller should exit the
 // current (un-elevated) instance on success.
@@ -31,16 +48,7 @@ func relaunchElevated() error {
 	if err != nil {
 		return err
 	}
-	verbPtr, _ := windows.UTF16PtrFromString("runas")
-	exePtr, err := windows.UTF16PtrFromString(exe)
-	if err != nil {
-		return err
-	}
-	argsPtr, _ := windows.UTF16PtrFromString(strings.Join(os.Args[1:], " "))
-	cwd, _ := os.Getwd()
-	cwdPtr, _ := windows.UTF16PtrFromString(cwd)
-	const swShowNormal = 1
-	return windows.ShellExecute(0, verbPtr, exePtr, argsPtr, cwdPtr, swShowNormal)
+	return runAsAdmin(exe, strings.Join(os.Args[1:], " "))
 }
 
 // windowIsElevated reports whether the process owning hwnd is elevated. It is
