@@ -89,5 +89,213 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// ---- Input tools (mouse / keyboard / scroll) ----
+
+	// click — move to (x,y) and click a mouse button (left/right/middle).
+	s.AddTool(
+		mcp.NewTool("click",
+			mcp.WithDescription("Move the mouse to absolute screen pixel (x,y) and click. button is left (default), right, or middle."),
+			mcp.WithNumber("x", mcp.Description("Absolute X pixel on the virtual desktop."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("Absolute Y pixel on the virtual desktop."), mcp.Required()),
+			mcp.WithString("button", mcp.Description("Mouse button: left (default), right, or middle.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			button := req.GetString("button", "left")
+			if err := mouseClick(x, y, button); err != nil {
+				return mcp.NewToolResultErrorFromErr("click failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: %s-clicked at (%d,%d)", button, x, y)), nil
+		},
+	)
+
+	// move — move the mouse cursor without clicking.
+	s.AddTool(
+		mcp.NewTool("move",
+			mcp.WithDescription("Move the mouse cursor to absolute screen pixel (x,y) without clicking."),
+			mcp.WithNumber("x", mcp.Description("Absolute X pixel on the virtual desktop."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("Absolute Y pixel on the virtual desktop."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			if err := mouseMove(x, y); err != nil {
+				return mcp.NewToolResultErrorFromErr("move failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: moved to (%d,%d)", x, y)), nil
+		},
+	)
+
+	// double_click — left double-click at (x,y).
+	s.AddTool(
+		mcp.NewTool("double_click",
+			mcp.WithDescription("Left double-click at absolute screen pixel (x,y)."),
+			mcp.WithNumber("x", mcp.Description("Absolute X pixel on the virtual desktop."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("Absolute Y pixel on the virtual desktop."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			if err := mouseDouble(x, y); err != nil {
+				return mcp.NewToolResultErrorFromErr("double_click failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: double-clicked at (%d,%d)", x, y)), nil
+		},
+	)
+
+	// type — type a Unicode string at the current focus.
+	s.AddTool(
+		mcp.NewTool("type",
+			mcp.WithDescription("Type a Unicode text string into the currently focused control (per-character key events). Does not press Enter."),
+			mcp.WithString("text", mcp.Description("The text to type."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			text, err := req.RequireString("text")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'text'"), nil
+			}
+			if err := typeText(text); err != nil {
+				return mcp.NewToolResultErrorFromErr("type failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: typed %d characters", len([]rune(text)))), nil
+		},
+	)
+
+	// key — press a key combo (e.g. "ctrl+c", "alt+f4", "enter").
+	s.AddTool(
+		mcp.NewTool("key",
+			mcp.WithDescription("Press a key or key combo such as 'enter', 'ctrl+c', 'alt+f4', 'ctrl+shift+s'. Modifiers: ctrl, alt, shift, win."),
+			mcp.WithString("combo", mcp.Description("Key combo, e.g. 'ctrl+c' or 'enter'."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			combo, err := req.RequireString("combo")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'combo'"), nil
+			}
+			if err := keyCombo(combo); err != nil {
+				return mcp.NewToolResultErrorFromErr("key failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: pressed %q", combo)), nil
+		},
+	)
+
+	// scroll — scroll the mouse wheel. dy up/down, dx left/right (in lines).
+	s.AddTool(
+		mcp.NewTool("scroll",
+			mcp.WithDescription("Scroll the mouse wheel. dy>0 scrolls up, dy<0 down; dx>0 right, dx<0 left. Units are wheel notches/lines."),
+			mcp.WithNumber("dx", mcp.Description("Horizontal scroll amount (lines). Positive = right.")),
+			mcp.WithNumber("dy", mcp.Description("Vertical scroll amount (lines). Positive = up.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			dx := req.GetInt("dx", 0)
+			dy := req.GetInt("dy", 0)
+			if dx == 0 && dy == 0 {
+				return mcp.NewToolResultError("scroll requires a non-zero dx or dy"), nil
+			}
+			if err := scroll(dx, dy); err != nil {
+				return mcp.NewToolResultErrorFromErr("scroll failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: scrolled dx=%d dy=%d", dx, dy)), nil
+		},
+	)
+
+	// ---- Coordinate preset tools ----
+
+	presetPath, err := defaultPresetsPath()
+	if err != nil {
+		return fmt.Errorf("presets path: %w", err)
+	}
+	presets := NewPresetStore(presetPath)
+	if err := presets.Load(); err != nil {
+		return fmt.Errorf("load presets: %w", err)
+	}
+
+	// preset_save — store a named (x,y) coordinate.
+	s.AddTool(
+		mcp.NewTool("preset_save",
+			mcp.WithDescription("Save a named screen coordinate so it can be clicked later by name with preset_click."),
+			mcp.WithString("name", mcp.Description("Preset name."), mcp.Required()),
+			mcp.WithNumber("x", mcp.Description("Absolute X pixel."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("Absolute Y pixel."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			if err := presets.Set(name, x, y); err != nil {
+				return mcp.NewToolResultErrorFromErr("preset_save failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: saved preset %q = (%d,%d)", name, x, y)), nil
+		},
+	)
+
+	// preset_click — left-click a previously saved preset coordinate.
+	s.AddTool(
+		mcp.NewTool("preset_click",
+			mcp.WithDescription("Left-click a previously saved coordinate preset by name."),
+			mcp.WithString("name", mcp.Description("Preset name to click."), mcp.Required()),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			name, err := req.RequireString("name")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'name'"), nil
+			}
+			p, ok := presets.Get(name)
+			if !ok {
+				return mcp.NewToolResultError(fmt.Sprintf("no preset named %q", name)), nil
+			}
+			if err := mouseClick(p.X, p.Y, "left"); err != nil {
+				return mcp.NewToolResultErrorFromErr("preset_click failed", err), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("ok: clicked preset %q at (%d,%d)", name, p.X, p.Y)), nil
+		},
+	)
+
+	// preset_list — list all saved presets.
+	s.AddTool(
+		mcp.NewTool("preset_list",
+			mcp.WithDescription("List all saved coordinate presets as 'name | x,y' lines."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			list := presets.List()
+			if len(list) == 0 {
+				return mcp.NewToolResultText("(no presets saved)"), nil
+			}
+			var b strings.Builder
+			for _, p := range list {
+				fmt.Fprintf(&b, "%s | %d,%d\n", p.Name, p.X, p.Y)
+			}
+			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
+		},
+	)
+
 	return server.ServeStdio(s)
 }
