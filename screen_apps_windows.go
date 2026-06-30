@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -212,6 +213,96 @@ func listControls(window string, includeHidden bool) ([]control, error) {
 		return nil, fmt.Errorf("no window matching %q", window)
 	}
 	return enumControls(top, includeHidden), nil
+}
+
+// windowPID returns the process id that owns hwnd.
+func windowPID(hwnd uintptr) uint32 {
+	var pid uint32
+	procGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	return pid
+}
+
+// defaultAffirmative are the button labels treated as "confirm/proceed" when
+// auto-handling dialogs (Korean + English). Matched case-insensitively as a
+// substring of the button text.
+var defaultAffirmative = []string{"예", "확인", "yes", "ok", "전송", "보내", "send", "apply", "적용"}
+
+// findAffirmativeButton returns the first VISIBLE Button control in hwnd whose
+// label matches one of accept (case-insensitive substring).
+func findAffirmativeButton(hwnd uintptr, accept []string) (control, bool) {
+	for _, c := range enumControls(hwnd, false) {
+		if !strings.Contains(strings.ToLower(c.Class), "button") {
+			continue
+		}
+		lt := strings.ToLower(strings.TrimSpace(c.Text))
+		if lt == "" {
+			continue
+		}
+		for _, a := range accept {
+			a = strings.ToLower(strings.TrimSpace(a))
+			if a != "" && strings.Contains(lt, a) {
+				return c, true
+			}
+		}
+	}
+	return control{}, false
+}
+
+// confirmDialogs auto-clicks affirmative buttons on confirmation dialogs that
+// pop up for appTitle, so an automated sweep runs continuously without human
+// input (e.g. the app's "전송하시겠습니까?" prompts). It handles up to maxN
+// consecutive dialogs — separate popup windows owned by the app's process, or a
+// dialog rendered as visible child controls of the main window — and returns one
+// line per dialog handled. accept is the affirmative-label list (defaults apply
+// when empty).
+func confirmDialogs(appTitle string, accept []string, maxN int) ([]string, error) {
+	main, ok := findTopWindow(appTitle)
+	if !ok {
+		return nil, fmt.Errorf("no window matching %q", appTitle)
+	}
+	if len(accept) == 0 {
+		accept = defaultAffirmative
+	}
+	if maxN <= 0 {
+		maxN = 5
+	}
+	pid := windowPID(main)
+
+	var handled []string
+	for i := 0; i < maxN; i++ {
+		clicked := false
+
+		// 1) Separate popup window belonging to the same app process.
+		for _, w := range enumWindows() {
+			if w.HWND == main || windowPID(w.HWND) != pid {
+				continue
+			}
+			if btn, found := findAffirmativeButton(w.HWND, accept); found {
+				_ = bringToFront(w.HWND)
+				if err := mouseClick(btn.CenterX(), btn.CenterY(), "left"); err == nil {
+					handled = append(handled, fmt.Sprintf("popup %q -> clicked %q", w.Title, btn.Text))
+					clicked = true
+					break
+				}
+			}
+		}
+
+		// 2) Dialog rendered as visible child controls of the main window.
+		if !clicked {
+			if btn, found := findAffirmativeButton(main, accept); found {
+				if err := mouseClick(btn.CenterX(), btn.CenterY(), "left"); err == nil {
+					handled = append(handled, fmt.Sprintf("inline dialog -> clicked %q", btn.Text))
+					clicked = true
+				}
+			}
+		}
+
+		if !clicked {
+			break // no more dialogs
+		}
+		time.Sleep(400 * time.Millisecond) // let the next dialog (if any) appear
+	}
+	return handled, nil
 }
 
 // clickControl finds the nth (0-based) VISIBLE control in window whose label

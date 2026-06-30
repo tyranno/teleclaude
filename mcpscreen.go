@@ -456,6 +456,36 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// confirm_dialogs — auto-click affirmative buttons on the app's confirmation
+	// popups so an automated sweep runs continuously without human input.
+	s.AddTool(
+		mcp.NewTool("confirm_dialogs",
+			mcp.WithDescription("Auto-handle confirmation dialogs that an app pops up (e.g. '전송하시겠습니까?' / 'OK?'). Detects up to 'max' consecutive dialogs — separate popup windows owned by the app, or a dialog rendered as child controls of the main window — and clicks an affirmative button on each. Returns one line per dialog handled (empty if none). Use right after a command click so a feature sweep proceeds without stopping for the user."),
+			mcp.WithString("app", mcp.Description("Target app window: title substring or hwnd."), mcp.Required()),
+			mcp.WithString("accept", mcp.Description("Optional '+'-separated affirmative button labels to match (case-insensitive substring). Default: 예+확인+Yes+OK+전송+보내+Send+Apply+적용.")),
+			mcp.WithNumber("max", mcp.Description("Max consecutive dialogs to handle (default 5).")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			app, err := req.RequireString("app")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'app'"), nil
+			}
+			var accept []string
+			if a := strings.TrimSpace(req.GetString("accept", "")); a != "" {
+				accept = strings.Split(a, "+")
+			}
+			maxN := req.GetInt("max", 5)
+			handled, err := confirmDialogs(app, accept, maxN)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("confirm_dialogs failed", err), nil
+			}
+			if len(handled) == 0 {
+				return mcp.NewToolResultText("ok: no dialogs detected"), nil
+			}
+			return mcp.NewToolResultText("ok: handled " + fmt.Sprintf("%d dialog(s):\n", len(handled)) + strings.Join(handled, "\n")), nil
+		},
+	)
+
 	// ---- UIA (UI Automation) tools — preferred over screenshot/click ----
 
 	// snapshot — read the foreground window's UIA element tree as text.
