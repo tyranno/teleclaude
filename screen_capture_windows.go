@@ -8,6 +8,7 @@ import (
 	"image"
 	"image/png"
 	"sync"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -109,6 +110,13 @@ func captureWindow(titleOrHwnd string) (png []byte, left, top, width, height int
 	hwnd, ok := findTopWindow(titleOrHwnd)
 	if !ok {
 		return nil, 0, 0, 0, 0, fmt.Errorf("captureWindow: no window matching %q", titleOrHwnd)
+	}
+	// A window on another virtual desktop is DWM-cloaked: a BitBlt of its screen
+	// rect would capture the CURRENT desktop's pixels, not the window. Switch to
+	// its desktop first (this also records a return anchor via bringToFront).
+	if isWindowOnAnotherDesktop(hwnd) {
+		_ = bringToFront(hwnd)
+		time.Sleep(300 * time.Millisecond) // let the desktop switch + repaint settle
 	}
 	rc := windowRect(hwnd)
 	width = int(rc.Right - rc.Left)

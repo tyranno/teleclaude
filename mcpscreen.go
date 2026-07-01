@@ -30,7 +30,7 @@ func RunMCPScreen() error {
 	// list_windows — visible top-level windows as "TITLE | hwnd=0x..".
 	s.AddTool(
 		mcp.NewTool("list_windows",
-			mcp.WithDescription("List visible top-level windows. Returns one window per line as 'TITLE | hwnd=0x..'."),
+			mcp.WithDescription("List visible top-level windows (across ALL virtual desktops) as 'TITLE | hwnd=0x..'. Windows on another virtual desktop are tagged [other-desktop] — focusing/capturing one switches to its desktop; call return_desktop when done to switch back."),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			wins := enumWindows()
@@ -39,7 +39,11 @@ func RunMCPScreen() error {
 			}
 			var b strings.Builder
 			for _, w := range wins {
-				fmt.Fprintf(&b, "%s | hwnd=0x%x\n", w.Title, w.HWND)
+				tag := ""
+				if isWindowOnAnotherDesktop(w.HWND) {
+					tag = " [other-desktop]"
+				}
+				fmt.Fprintf(&b, "%s | hwnd=0x%x%s\n", w.Title, w.HWND, tag)
 			}
 			return mcp.NewToolResultText(strings.TrimRight(b.String(), "\n")), nil
 		},
@@ -89,6 +93,21 @@ func RunMCPScreen() error {
 				return mcp.NewToolResultErrorFromErr("focus_window failed", err), nil
 			}
 			return mcp.NewToolResultText(fmt.Sprintf("ok: focused %q", target)), nil
+		},
+	)
+
+	// return_desktop — switch back to the virtual desktop that was active before
+	// the screen tools first jumped to another desktop to operate a window there.
+	s.AddTool(
+		mcp.NewTool("return_desktop",
+			mcp.WithDescription("Switch back to the virtual desktop that was active before you focused/captured a window on another desktop. Call this when finished operating on an [other-desktop] window so the user is returned to where they were. No-op if no cross-desktop switch happened."),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			msg, err := returnToOriginDesktop()
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("return_desktop failed", err), nil
+			}
+			return mcp.NewToolResultText("ok: " + msg), nil
 		},
 	)
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -24,22 +25,40 @@ var (
 	modUser32      = windows.NewLazySystemDLL("user32.dll")
 	modKernel32App = windows.NewLazySystemDLL("kernel32.dll")
 
-	procEnumWindows         = modUser32.NewProc("EnumWindows")
-	procEnumChildWindows    = modUser32.NewProc("EnumChildWindows")
-	procGetWindowTextW      = modUser32.NewProc("GetWindowTextW")
-	procGetWindowTextLength = modUser32.NewProc("GetWindowTextLengthW")
-	procGetClassNameW       = modUser32.NewProc("GetClassNameW")
-	procGetWindowRect       = modUser32.NewProc("GetWindowRect")
-	procIsWindowVisible     = modUser32.NewProc("IsWindowVisible")
-	procSetForegroundWindow = modUser32.NewProc("SetForegroundWindow")
-	procShowWindow          = modUser32.NewProc("ShowWindow")
-	procIsIconic            = modUser32.NewProc("IsIconic")
-	procGetForegroundWindow = modUser32.NewProc("GetForegroundWindow")
-	procGetWindowThreadPID  = modUser32.NewProc("GetWindowThreadProcessId")
-	procAttachThreadInput   = modUser32.NewProc("AttachThreadInput")
-	procBringWindowToTop    = modUser32.NewProc("BringWindowToTop")
-	procGetCurrentThreadID  = modKernel32App.NewProc("GetCurrentThreadId")
+	procEnumWindows          = modUser32.NewProc("EnumWindows")
+	procEnumChildWindows     = modUser32.NewProc("EnumChildWindows")
+	procGetWindowTextW       = modUser32.NewProc("GetWindowTextW")
+	procGetWindowTextLength  = modUser32.NewProc("GetWindowTextLengthW")
+	procGetClassNameW        = modUser32.NewProc("GetClassNameW")
+	procGetWindowRect        = modUser32.NewProc("GetWindowRect")
+	procIsWindowVisible      = modUser32.NewProc("IsWindowVisible")
+	procSetForegroundWindow  = modUser32.NewProc("SetForegroundWindow")
+	procShowWindow           = modUser32.NewProc("ShowWindow")
+	procIsIconic             = modUser32.NewProc("IsIconic")
+	procGetForegroundWindow  = modUser32.NewProc("GetForegroundWindow")
+	procGetWindowThreadPID   = modUser32.NewProc("GetWindowThreadProcessId")
+	procAttachThreadInput    = modUser32.NewProc("AttachThreadInput")
+	procBringWindowToTop     = modUser32.NewProc("BringWindowToTop")
+	procSystemParametersInfo = modUser32.NewProc("SystemParametersInfoW")
+	procLockSetForeground    = modUser32.NewProc("LockSetForegroundWindow")
+	procGetCurrentThreadID   = modKernel32App.NewProc("GetCurrentThreadId")
 )
+
+// originAnchor remembers a NON-pinned window on the desktop that was active when
+// the screen MCP first switched to another virtual desktop (to operate a window
+// there). return_desktop re-focuses it to switch back. Guarded by originMu.
+var (
+	originMu     sync.Mutex
+	originAnchor uintptr
+)
+
+// clearForegroundLock disables the Windows foreground-lock (timeout→0, unlock) so
+// SetForegroundWindow from this background process reliably switches focus — and,
+// crucially, switches virtual desktops — even when another app is foreground.
+func clearForegroundLock() {
+	procSystemParametersInfo.Call(spiSetFgLock, 0, 0, spifSendChange)
+	procLockSetForeground.Call(lsfwUnlock)
+}
 
 const swRestore = 9
 
@@ -138,11 +157,41 @@ func findTopWindow(titleOrHwnd string) (uintptr, bool) {
 }
 
 // bringToFront restores (if minimized) and foregrounds a window handle.
+// If the target is on another virtual desktop, focusing it makes Windows switch
+// to that desktop — so we first remember a return anchor on the current desktop
+// (once), letting return_desktop switch back afterwards.
 func bringToFront(hwnd uintptr) error {
+	if isWindowOnAnotherDesktop(hwnd) {
+		originMu.Lock()
+		if originAnchor == 0 {
+			if a := pickReturnAnchor(); a != 0 && a != hwnd {
+				originAnchor = a
+			}
+		}
+		originMu.Unlock()
+	}
 	if iconic, _, _ := procIsIconic.Call(hwnd); iconic != 0 {
 		procShowWindow.Call(hwnd, swRestore)
 	}
 	return forceForeground(hwnd)
+}
+
+// returnToOriginDesktop switches back to the virtual desktop that was active
+// before the screen MCP first jumped to another desktop, by re-focusing the
+// remembered anchor window. No-op (with a message) if no switch happened.
+func returnToOriginDesktop() (string, error) {
+	originMu.Lock()
+	anchor := originAnchor
+	originAnchor = 0
+	originMu.Unlock()
+
+	if anchor == 0 {
+		return "no saved origin desktop (no cross-desktop switch happened)", nil
+	}
+	if err := forceForeground(anchor); err != nil {
+		return "", fmt.Errorf("return_desktop: %w", err)
+	}
+	return fmt.Sprintf("returned to origin desktop (re-focused %q)", getWindowText(anchor)), nil
 }
 
 // rect mirrors the Win32 RECT struct (screen coordinates).
@@ -364,6 +413,10 @@ func clickControl(window, text string, nth int) (string, error) {
 // foreground-lock by attaching our input thread to the current foreground
 // window's thread for the duration of the SetForegroundWindow call.
 func forceForeground(target uintptr) error {
+	// Drop the foreground lock first so focus/desktop switches are not silently
+	// refused when another app currently owns the foreground.
+	clearForegroundLock()
+
 	// Fast path.
 	if ok, _, _ := procSetForegroundWindow.Call(target); ok != 0 {
 		return nil

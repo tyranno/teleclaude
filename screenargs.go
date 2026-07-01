@@ -30,6 +30,9 @@ func screenSystemPrompt() string {
 		"7. 명령 클릭 후 앱이 '전송하시겠습니까?' 같은 확인창을 띄우면, 사용자에게 묻지 말고 confirm_dialogs(app)로 " +
 		"자동 확인하라(연쇄 확인창도 처리). 그래야 메뉴 전수 스윕이 사용자 개입 없이 연속 진행된다. 외부 패킷 캡처는 Bash로 " +
 		"dumpcap/tshark를 실행하고 결과파일을 읽어 기능↔패킷을 상관시켜라.\n" +
+		"8. list_windows에서 [other-desktop]로 표시된 창은 다른 가상 데스크톱에 있다. focus_window/capture_window/click_control로 " +
+		"조작하면 그 데스크톱으로 자동 전환된다(안 그러면 캡처·클릭이 엉뚱한 데스크톱을 대상으로 함). 작업이 끝나면 return_desktop을 " +
+		"호출해 사용자가 있던 원래 데스크톱으로 되돌려라.\n" +
 		"Always prefer snapshot/invoke, then win_controls/click_control, then screenshot+click as the last resort."
 }
 
