@@ -76,6 +76,19 @@ func (b *Bot) Send(chatID int64, text string) error {
 	return err
 }
 
+// SendPhoto delivers a PNG image (e.g. a screenshot) with an optional caption.
+func (b *Bot) SendPhoto(chatID int64, png []byte, caption string) error {
+	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileBytes{Name: "screen.png", Bytes: png})
+	if caption != "" {
+		photo.Caption = caption
+	}
+	_, err := b.api.Send(photo)
+	if err != nil {
+		log.Printf("[bot] photo send error: %v", err)
+	}
+	return err
+}
+
 // Typing shows the "typing…" indicator (MessageSender).
 func (b *Bot) Typing(chatID int64) {
 	if _, err := b.api.Request(tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)); err != nil {
@@ -287,9 +300,42 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 		b.handleUser(chatID, fields)
 	case "!parallel":
 		b.handleParallel(chatID, text)
+	case "!screen":
+		b.handleScreen(chatID, fields)
 	default:
 		_ = b.Send(chatID, "알 수 없는 명령입니다. !help 를 참고하세요.")
 	}
+}
+
+// handleScreen runs a direct !screen subcommand, bypassing LLM routing/worker for
+// fast deterministic screen control. Reuses the in-process Win32 helpers via
+// screenCommand (Windows-only; stubbed elsewhere).
+//
+//	!screen list                  visible windows
+//	!screen shot [창이름]          screenshot (cropped to a window, or full screen)
+//	!screen preset save <이름>     save current cursor position
+//	!screen click <프리셋이름>      click a saved preset (no LLM)
+func (b *Bot) handleScreen(chatID int64, fields []string) {
+	if len(fields) < 2 {
+		_ = b.Send(chatID, "사용법: !screen list | !screen shot [창이름] | !screen preset save <이름> | !screen click <프리셋이름>")
+		return
+	}
+	presetsPath := b.cfg().ScreenPresetsFile
+	if presetsPath == "" {
+		if p, err := defaultPresetsPath(); err == nil {
+			presetsPath = p
+		}
+	}
+	text, img, err := screenCommand(fields[1], fields[2:], presetsPath)
+	if err != nil {
+		_ = b.Send(chatID, "❌ "+err.Error())
+		return
+	}
+	if img != nil {
+		_ = b.SendPhoto(chatID, img, text)
+		return
+	}
+	_ = b.Send(chatID, text)
 }
 
 func (b *Bot) cancel(chatID int64) {
@@ -1540,6 +1586,12 @@ func helpText() string {
 !user add <id>               런타임 허용 사용자 추가 (재시작 후에도 유지)
 !user remove <id>            런타임 허용 사용자 제거
 !user list                   허용 사용자 목록 (config + runtime)
+
+화면 제어 (Windows, LLM 우회 즉시 실행):
+!screen list                 보이는 창 목록
+!screen shot [창이름]         스크린샷 (창 지정 시 해당 창만, 없으면 전체)
+!screen preset save <이름>    현재 커서 위치를 프리셋으로 저장
+!screen click <프리셋이름>     저장한 프리셋 좌표 클릭 (즉시)
 
 기타:
 !remind <시간> <메시지>      일회성 알림 (구버전 호환)

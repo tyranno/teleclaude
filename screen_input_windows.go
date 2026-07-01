@@ -25,7 +25,16 @@ var (
 	procGetSystemMetricsIn = modUser32In.NewProc("GetSystemMetrics")
 	procVkKeyScanW         = modUser32In.NewProc("VkKeyScanW")
 	procMapVirtualKeyW     = modUser32In.NewProc("MapVirtualKeyW")
+	procGetCursorPos       = modUser32In.NewProc("GetCursorPos")
 )
+
+// cursorPos returns the current mouse cursor position in screen pixels.
+func cursorPos() (int, int) {
+	ensureDPIAware()
+	var pt struct{ X, Y int32 }
+	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	return int(pt.X), int(pt.Y)
+}
 
 const (
 	inputMouse    = 0
