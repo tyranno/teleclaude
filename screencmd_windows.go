@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -50,6 +51,29 @@ func screenCommand(sub string, args []string, presetsPath string) (string, []byt
 		}
 		return "🖼 전체 화면", png, nil
 
+	case "region":
+		// !screen region <x> <y> <width> <height> [window...]
+		if len(args) < 4 {
+			return "", nil, fmt.Errorf("사용법: !screen region <x> <y> <너비> <높이> [창이름]")
+		}
+		vals := make([]int, 4)
+		for i := 0; i < 4; i++ {
+			n, perr := strconv.Atoi(args[i])
+			if perr != nil {
+				return "", nil, fmt.Errorf("좌표/크기는 정수여야 합니다: %q", args[i])
+			}
+			vals[i] = n
+		}
+		window := strings.TrimSpace(strings.Join(args[4:], " "))
+		png, absX, absY, err := captureRegionAt(window, vals[0], vals[1], vals[2], vals[3])
+		if err != nil {
+			return "", nil, err
+		}
+		if window != "" {
+			return fmt.Sprintf("🖼 %q 영역 — 창상대(%d,%d) %dx%d → 화면(%d,%d)", window, vals[0], vals[1], vals[2], vals[3], absX, absY), png, nil
+		}
+		return fmt.Sprintf("🖼 화면 영역 (%d,%d) %dx%d", absX, absY, vals[2], vals[3]), png, nil
+
 	case "preset":
 		if len(args) < 2 || strings.ToLower(args[0]) != "save" {
 			return "", nil, fmt.Errorf("사용법: !screen preset save <이름>")
@@ -87,6 +111,6 @@ func screenCommand(sub string, args []string, presetsPath string) (string, []byt
 		return fmt.Sprintf("🖱 프리셋 %q 클릭 — (%d,%d)", name, p.X, p.Y), nil, nil
 
 	default:
-		return "", nil, fmt.Errorf("알 수 없는 !screen 서브명령 %q (list | shot | preset | click)", sub)
+		return "", nil, fmt.Errorf("알 수 없는 !screen 서브명령 %q (list | shot | region | preset | click)", sub)
 	}
 }

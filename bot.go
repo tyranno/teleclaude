@@ -317,7 +317,7 @@ func (b *Bot) handleCommand(chatID int64, text string) {
 //	!screen click <프리셋이름>      click a saved preset (no LLM)
 func (b *Bot) handleScreen(chatID int64, fields []string) {
 	if len(fields) < 2 {
-		_ = b.Send(chatID, "사용법: !screen list | !screen shot [창이름] | !screen preset save <이름> | !screen click <프리셋이름>")
+		_ = b.Send(chatID, "사용법: !screen list | !screen shot [창이름] | !screen region <x> <y> <너비> <높이> [창이름] | !screen preset save <이름> | !screen click <프리셋이름>")
 		return
 	}
 	presetsPath := b.cfg().ScreenPresetsFile
@@ -1594,6 +1594,7 @@ func helpText() string {
 화면 제어 (Windows, LLM 우회 즉시 실행):
 !screen list                 보이는 창 목록
 !screen shot [창이름]         스크린샷 (창 지정 시 해당 창만, 없으면 전체)
+!screen region <x> <y> <w> <h> [창이름]  영역 캡처 (창 지정 시 창 상대좌표)
 !screen preset save <이름>    현재 커서 위치를 프리셋으로 저장
 !screen click <프리셋이름>     저장한 프리셋 좌표 클릭 (즉시)
 

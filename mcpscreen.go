@@ -159,6 +159,53 @@ func RunMCPScreen() error {
 		},
 	)
 
+	// capture_region — capture an arbitrary rectangle as a PNG. Coordinates are
+	// absolute screen pixels, or relative to a window's top-left when 'window' is
+	// given (which also switches to that window's virtual desktop first).
+	s.AddTool(
+		mcp.NewTool("capture_region",
+			mcp.WithDescription("Capture an arbitrary rectangle as a PNG — useful to zoom into just part of a screen or window. (x,y) is the top-left; width and height the size. By default (x,y) are ABSOLUTE screen pixels. If 'window' is given, (x,y) are RELATIVE to that window's top-left (and we switch to its virtual desktop first if needed). The caption reports the rectangle's absolute screen origin so an in-image pixel (ix,iy) maps to click(x=origin+ix, y=origin+iy)."),
+			mcp.WithNumber("x", mcp.Description("Left of the rectangle: absolute screen X, or window-relative X if 'window' is set."), mcp.Required()),
+			mcp.WithNumber("y", mcp.Description("Top of the rectangle: absolute screen Y, or window-relative Y if 'window' is set."), mcp.Required()),
+			mcp.WithNumber("width", mcp.Description("Rectangle width in pixels (>0)."), mcp.Required()),
+			mcp.WithNumber("height", mcp.Description("Rectangle height in pixels (>0)."), mcp.Required()),
+			mcp.WithString("window", mcp.Description("Optional target window (title substring or hwnd). When set, x/y are relative to this window's top-left.")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			x, err := req.RequireInt("x")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'x'"), nil
+			}
+			y, err := req.RequireInt("y")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'y'"), nil
+			}
+			w, err := req.RequireInt("width")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'width'"), nil
+			}
+			h, err := req.RequireInt("height")
+			if err != nil {
+				return mcp.NewToolResultError("missing required argument 'height'"), nil
+			}
+			window := req.GetString("window", "")
+			png, absX, absY, err := captureRegionAt(window, x, y, w, h)
+			if err != nil {
+				return mcp.NewToolResultErrorFromErr("capture_region failed", err), nil
+			}
+			b64 := base64.StdEncoding.EncodeToString(png)
+			var caption string
+			if strings.TrimSpace(window) != "" {
+				caption = fmt.Sprintf("Region of window %q at window-relative (%d,%d), size %dx%d — screen origin (%d,%d). "+
+					"To click image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).", window, x, y, w, h, absX, absY, absX, absY)
+			} else {
+				caption = fmt.Sprintf("Screen region at (%d,%d), size %dx%d. "+
+					"To click image pixel (ix,iy), call click(x=%d+ix, y=%d+iy).", absX, absY, w, h, absX, absY)
+			}
+			return mcp.NewToolResultImage(caption, b64, "image/png"), nil
+		},
+	)
+
 	// ---- Input tools (mouse / keyboard / scroll) ----
 
 	// click — move to (x,y) and click a mouse button, optionally holding modifiers.

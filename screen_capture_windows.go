@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -129,6 +130,38 @@ func captureWindow(titleOrHwnd string) (png []byte, left, top, width, height int
 		return nil, 0, 0, 0, 0, err
 	}
 	return png, int(rc.Left), int(rc.Top), width, height, nil
+}
+
+// captureRegionAt captures a width×height rectangle and returns the PNG plus the
+// rectangle's absolute screen origin (so an in-image pixel (ix,iy) maps to screen
+// (origin+ix, origin+iy)). When window == "" the (x,y) are absolute screen
+// coordinates; otherwise they are interpreted relative to that window's top-left
+// (and, if the window is on another virtual desktop, we switch to it first — as
+// capture_window does — so the pixels are the real window, not a stale desktop).
+func captureRegionAt(window string, x, y, width, height int) (png []byte, absX, absY int, err error) {
+	ensureDPIAware()
+	if width <= 0 || height <= 0 {
+		return nil, 0, 0, fmt.Errorf("capture_region: width/height must be positive (got %dx%d)", width, height)
+	}
+	absX, absY = x, y
+	if strings.TrimSpace(window) != "" {
+		hwnd, ok := findTopWindow(window)
+		if !ok {
+			return nil, 0, 0, fmt.Errorf("capture_region: no window matching %q", window)
+		}
+		if isWindowOnAnotherDesktop(hwnd) {
+			_ = bringToFront(hwnd)
+			time.Sleep(300 * time.Millisecond)
+		}
+		rc := windowRect(hwnd)
+		absX = int(rc.Left) + x
+		absY = int(rc.Top) + y
+	}
+	png, err = captureRegion(int32(absX), int32(absY), width, height)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	return png, absX, absY, nil
 }
 
 // captureRegion BitBlts a rectangle of the screen (source top-left at srcX,srcY in
