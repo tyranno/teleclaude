@@ -14,10 +14,11 @@ import (
 // screencmd_stub.go covers other platforms.
 //
 // Subcommands:
-//   list                    → visible top-level windows
-//   shot [window]           → PNG of a window (cropped) or the full screen
-//   preset save <name>      → save the current cursor position as a preset
-//   click <preset>          → left-click a saved preset (no LLM)
+//
+//	list                    → visible top-level windows
+//	shot [window]           → PNG of a window (cropped) or the full screen
+//	preset save <name>      → save the current cursor position as a preset
+//	click <preset>          → left-click a saved preset (no LLM)
 //
 // Returns (text, pngImage, error): when pngImage is non-nil the caller sends it
 // as a photo with text as the caption; otherwise text is sent as a message.

@@ -94,9 +94,9 @@ func LoadConfig(path string) (*Config, error) {
 	defer f.Close()
 
 	cfg := &Config{
-		ManagerModel:    "haiku",
-		TimeoutMinutes:  10,
-		ManagerAlways:   true,
+		ManagerModel:        "haiku",
+		TimeoutMinutes:      10,
+		ManagerAlways:       true,
 		MaxWorkers:          3,
 		RateLimitPerMin:     20,
 		AllowScripts:        false,
