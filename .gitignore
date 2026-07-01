@@ -26,3 +26,6 @@ Thumbs.db
 
 # Subagent-generated memory (not part of the project)
 .claude/agent-memory/
+
+# Repo-local runtime data (store/config written when workdir is the repo)
+.teleclaude/
