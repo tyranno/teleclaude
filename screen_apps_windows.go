@@ -207,10 +207,18 @@ func enumControls(top uintptr, includeHidden bool) []control {
 }
 
 // listControls resolves a window then returns its child controls.
+//
+// A minimized window reports every child's rect as the Windows iconic
+// placeholder (-32000,-32000, 0x0), which looks like valid-but-useless data
+// rather than an error — so we reject it explicitly instead of returning
+// coordinates that silently click nowhere.
 func listControls(window string, includeHidden bool) ([]control, error) {
 	top, ok := findTopWindow(window)
 	if !ok {
 		return nil, fmt.Errorf("no window matching %q", window)
+	}
+	if iconic, _, _ := procIsIconic.Call(top); iconic != 0 {
+		return nil, fmt.Errorf("window %q is minimized (control rects would be bogus); focus_window it first", window)
 	}
 	return enumControls(top, includeHidden), nil
 }
