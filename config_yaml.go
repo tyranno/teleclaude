@@ -31,9 +31,10 @@ type yamlConfig struct {
 		CodexManagerModel string `yaml:"codex_manager_model"`
 	} `yaml:"backend"`
 	Runtime struct {
-		TimeoutMinutes  *int `yaml:"timeout_minutes"`
-		MaxWorkers      *int `yaml:"max_workers"`
-		RateLimitPerMin *int `yaml:"rate_limit_per_min"`
+		TimeoutMinutes      *int `yaml:"timeout_minutes"`
+		MaxWorkers          *int `yaml:"max_workers"`
+		RateLimitPerMin     *int `yaml:"rate_limit_per_min"`
+		ConversationTTLDays *int `yaml:"conversation_ttl_days"`
 	} `yaml:"runtime"`
 	Scripts struct {
 		Allow           bool     `yaml:"allow"`
@@ -49,12 +50,13 @@ type yamlConfig struct {
 // defaults mirror config.go LoadConfig defaults.
 func yamlToConfig(y *yamlConfig) *Config {
 	c := &Config{
-		ManagerModel:    "haiku",
-		TimeoutMinutes:  10,
-		ManagerAlways:   true,
-		MaxWorkers:      3,
-		RateLimitPerMin: 20,
-		AllowScripts:    false,
+		ManagerModel:        "haiku",
+		TimeoutMinutes:      10,
+		ManagerAlways:       true,
+		MaxWorkers:          3,
+		RateLimitPerMin:     20,
+		AllowScripts:        false,
+		ConversationTTLDays: 30,
 	}
 	c.TelegramBotToken = y.Telegram.BotToken
 	c.AllowedUserIDs = y.Telegram.AllowedUserIDs
@@ -85,6 +87,9 @@ func yamlToConfig(y *yamlConfig) *Config {
 	if y.Runtime.RateLimitPerMin != nil {
 		c.RateLimitPerMin = *y.Runtime.RateLimitPerMin
 	}
+	if y.Runtime.ConversationTTLDays != nil {
+		c.ConversationTTLDays = *y.Runtime.ConversationTTLDays
+	}
 	c.AllowScripts = y.Scripts.Allow
 	for _, cmd := range y.Scripts.AllowedCommands {
 		if s := strings.TrimSpace(cmd); s != "" {
@@ -112,10 +117,11 @@ func configToYAML(c *Config) *yamlConfig {
 	y.Backend.CodexPath = c.CodexPath
 	y.Backend.CodexModel = c.CodexModel
 	y.Backend.CodexManagerModel = c.CodexManagerModel
-	tm, mw, rl := c.TimeoutMinutes, c.MaxWorkers, c.RateLimitPerMin
+	tm, mw, rl, ttl := c.TimeoutMinutes, c.MaxWorkers, c.RateLimitPerMin, c.ConversationTTLDays
 	y.Runtime.TimeoutMinutes = &tm
 	y.Runtime.MaxWorkers = &mw
 	y.Runtime.RateLimitPerMin = &rl
+	y.Runtime.ConversationTTLDays = &ttl
 	y.Scripts.Allow = c.AllowScripts
 	y.Scripts.AllowedCommands = c.AllowedScriptCommands
 	y.ScreenControl.Enabled = c.ScreenControl

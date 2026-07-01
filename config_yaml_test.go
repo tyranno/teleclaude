@@ -19,8 +19,9 @@ func TestYAMLRoundTrip(t *testing.T) {
 		RateLimitPerMin:   20,
 		AllowScripts:      false,
 		ScreenControl:     true,
-		ScreenPresetsFile: "",
-		ScreenElevated:    true,
+		ScreenPresetsFile:   "",
+		ScreenElevated:      true,
+		ConversationTTLDays: 45,
 	}
 	b, err := marshalConfigYAML(c)
 	if err != nil {
@@ -35,7 +36,7 @@ func TestYAMLRoundTrip(t *testing.T) {
 		got.WorkerModel != "sonnet" || got.ManagerAlways != false ||
 		got.ClaudeOauthToken != "sk-ant-oat01-X" || got.DefaultBackend != "claude" ||
 		got.MaxWorkers != 3 || got.RateLimitPerMin != 20 || got.ScreenControl != true ||
-		got.ScreenElevated != true {
+		got.ScreenElevated != true || got.ConversationTTLDays != 45 {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}
 }
@@ -48,7 +49,7 @@ func TestYAMLDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.ManagerModel != "haiku" || got.TimeoutMinutes != 10 || got.MaxWorkers != 3 ||
-		got.RateLimitPerMin != 20 || got.ManagerAlways != true {
+		got.RateLimitPerMin != 20 || got.ManagerAlways != true || got.ConversationTTLDays != 30 {
 		t.Errorf("defaults wrong: %+v", got)
 	}
 }

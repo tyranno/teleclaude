@@ -232,6 +232,30 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	manager.SetScheduler(sched)
 	go sched.Run()
 
+	// Maintenance: prune conversations/history inactive for longer than
+	// ConversationTTLDays (default 30d, 0 disables). Runs once at startup then daily.
+	go func() {
+		runPrune := func() {
+			ttl := holder.Get().ConversationTTLDays
+			if n, perr := store.PruneOldConversations(ttl); perr != nil {
+				log.Printf("[maintenance] conversation prune failed: %v", perr)
+			} else if n > 0 {
+				log.Printf("[maintenance] pruned %d old conversation(s) (ttl=%dd)", n, ttl)
+			}
+			if n, perr := PruneHistory(ttl); perr != nil {
+				log.Printf("[maintenance] history prune failed: %v", perr)
+			} else if n > 0 {
+				log.Printf("[maintenance] pruned %d old history file(s) (ttl=%dd)", n, ttl)
+			}
+		}
+		runPrune()
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			runPrune()
+		}
+	}()
+
 	// Config hot-reload: watch the YAML file and apply changes without restart.
 	hooks := ReloadHooks{
 		OnRateLimit:    func(n int) { bot.rateLimiter.SetLimit(n) },

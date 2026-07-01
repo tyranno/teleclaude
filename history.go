@@ -138,6 +138,53 @@ func ListHistoryProjects() ([]string, error) {
 	return projects, nil
 }
 
+// PruneHistory deletes history/<project>/<YYYY-MM-DD>.md files older than
+// ttlDays. ttlDays <= 0 disables pruning (returns 0, nil). Returns the number
+// of files removed.
+func PruneHistory(ttlDays int) (int, error) {
+	if ttlDays <= 0 {
+		return 0, nil
+	}
+	base, err := historyDir()
+	if err != nil {
+		return 0, err
+	}
+	projectDirs, err := os.ReadDir(base)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	cutoff := time.Now().AddDate(0, 0, -ttlDays)
+	removed := 0
+	for _, pd := range projectDirs {
+		if !pd.IsDir() {
+			continue
+		}
+		projDir := filepath.Join(base, pd.Name())
+		files, err := os.ReadDir(projDir)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
+				continue
+			}
+			date, perr := time.Parse("2006-01-02", strings.TrimSuffix(f.Name(), ".md"))
+			if perr != nil {
+				continue
+			}
+			if date.Before(cutoff) {
+				if rerr := os.Remove(filepath.Join(projDir, f.Name())); rerr == nil {
+					removed++
+				}
+			}
+		}
+	}
+	return removed, nil
+}
+
 // sanitizeName replaces characters unsafe for directory names with underscores.
 func sanitizeName(s string) string {
 	var sb strings.Builder

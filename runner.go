@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -77,7 +78,15 @@ func (r *claudeRunner) Route(ctx context.Context, req RouteRequest) (RouteDecisi
 // MCP server is launched from via the hidden "__mcp-screen" subcommand. If it is
 // empty the screen args are skipped (we cannot point the worker at ourselves).
 func workerBaseArgs(cfg *Config, req RunRequest, selfExe string) []string {
-	args := []string{"-p", req.Prompt, "--output-format", "json", "--dangerously-skip-permissions"}
+	args := []string{"-p", req.Prompt}
+	if req.OnProgress != nil {
+		// Realtime NDJSON stream so tool-use activity can be relayed as it happens
+		// (see execStream/formatProgressEvent), instead of one envelope at the end.
+		args = append(args, "--output-format", "stream-json", "--include-partial-messages", "--verbose")
+	} else {
+		args = append(args, "--output-format", "json")
+	}
+	args = append(args, "--dangerously-skip-permissions")
 	args = append(args, isolationArgs...)
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
@@ -94,9 +103,30 @@ func workerBaseArgs(cfg *Config, req RunRequest, selfExe string) []string {
 }
 
 // Run executes a Worker turn in the project directory and returns the final text.
+// If req.OnProgress is set, the turn streams NDJSON (--output-format stream-json)
+// and OnProgress is called with a short human-readable line for each tool-use
+// event as it happens, instead of waiting for the single end-of-turn envelope.
 func (r *claudeRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	selfExe, _ := os.Executable()
 	args := workerBaseArgs(r.cfg(), req, selfExe)
+
+	if req.OnProgress != nil {
+		stdout, stderr, err := r.execStream(ctx, req.WorkDir, args, func(line string) {
+			if msg := formatProgressEvent(line); msg != "" {
+				req.OnProgress(msg)
+			}
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				return RunResult{}, ctx.Err()
+			}
+			if res, perr := parseStreamResult(stdout); perr == nil && res.Text != "" {
+				return res, nil
+			}
+			return RunResult{}, fmt.Errorf("worker 실행 실패: %w (%s)", err, strings.TrimSpace(stderr))
+		}
+		return parseStreamResult(stdout)
+	}
 
 	stdout, stderr, err := r.exec(ctx, req.WorkDir, args)
 	if err != nil {
@@ -132,7 +162,144 @@ func (r *claudeRunner) exec(ctx context.Context, dir string, args []string) (std
 	return outBuf.String(), errBuf.String(), err
 }
 
+// execStream runs the claude CLI like exec, but invokes onLine for each line of
+// stdout as it arrives (used for stream-json progress relay). Returns the full
+// stdout once the process exits, so the caller can still fall back to parsing it
+// (e.g. on non-zero exit).
+func (r *claudeRunner) execStream(ctx context.Context, dir string, args []string, onLine func(line string)) (stdout, stderr string, err error) {
+	cmd := exec.CommandContext(ctx, r.claudePath, args...)
+	cmd.Dir = dir
+	if c := r.cfg(); c != nil && c.ClaudeOauthToken != "" {
+		cmd.Env = append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+c.ClaudeOauthToken)
+	}
+	cmd.Cancel = func() error { return killTree(cmd.Process.Pid) }
+
+	stdoutPipe, perr := cmd.StdoutPipe()
+	if perr != nil {
+		return "", "", perr
+	}
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
+
+	if serr := cmd.Start(); serr != nil {
+		return "", "", serr
+	}
+
+	var outBuf bytes.Buffer
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024) // tool output lines can be large
+	for scanner.Scan() {
+		line := scanner.Text()
+		outBuf.WriteString(line)
+		outBuf.WriteByte('\n')
+		if onLine != nil {
+			onLine(line)
+		}
+	}
+
+	scanErr := scanner.Err()
+	err = cmd.Wait()
+	if err == nil && scanErr != nil {
+		// A scan error (e.g. a line exceeding the buffer) would otherwise return
+		// truncated stdout as success; surface it so the caller doesn't parse a
+		// partial stream as if complete.
+		err = fmt.Errorf("stream read error: %w", scanErr)
+	}
+	return outBuf.String(), errBuf.String(), err
+}
+
 // --- Pure parsing helpers (unit-testable without claude) ---
+
+// parseStreamResult scans stream-json NDJSON output (one JSON object per line)
+// for the terminal {"type":"result",...} line and decodes it the same way
+// parseRunResult decodes the single-envelope ("json" format) output.
+func parseStreamResult(stdout string) (RunResult, error) {
+	lines := strings.Split(stdout, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var probe struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(line), &probe) != nil || probe.Type != "result" {
+			continue
+		}
+		var env claudeEnvelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			return RunResult{}, fmt.Errorf("claude stream-json 결과 파싱 실패: %w", err)
+		}
+		return RunResult{Text: strings.TrimSpace(env.Result), IsError: env.IsError}, nil
+	}
+	return RunResult{}, fmt.Errorf("claude stream-json: result 라인을 찾지 못함")
+}
+
+// streamContentBlock is the subset of a stream-json "assistant" message's
+// content block fields we care about for progress relay.
+type streamContentBlock struct {
+	Type  string          `json:"type"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
+}
+
+// formatProgressEvent extracts a short human-readable progress line from one
+// stream-json NDJSON line, or "" if the line has nothing progress-worthy
+// (partial text deltas, system/init, rate-limit events, user/tool-result lines,
+// the final result envelope, etc. are all skipped — only completed tool_use
+// blocks in assistant messages produce a line).
+func formatProgressEvent(line string) string {
+	var m struct {
+		Type    string `json:"type"`
+		Message *struct {
+			Content []streamContentBlock `json:"content"`
+		} `json:"message"`
+	}
+	if json.Unmarshal([]byte(line), &m) != nil || m.Type != "assistant" || m.Message == nil {
+		return ""
+	}
+	for _, block := range m.Message.Content {
+		if block.Type != "tool_use" {
+			continue
+		}
+		if summary := toolUseSummary(block.Name, block.Input); summary != "" {
+			return "🔧 " + block.Name + ": " + summary
+		}
+		return "🔧 " + block.Name
+	}
+	return ""
+}
+
+// toolUseSummary renders a short (<=80 char) argument preview for common tools.
+// Returns "" for tools/shapes it doesn't recognize (caller falls back to the
+// bare tool name).
+func toolUseSummary(name string, input json.RawMessage) string {
+	var probe map[string]any
+	if json.Unmarshal(input, &probe) != nil {
+		return ""
+	}
+	key := ""
+	switch name {
+	case "Bash":
+		key = "command"
+	case "Read", "Edit", "Write":
+		key = "file_path"
+	case "Glob", "Grep":
+		key = "pattern"
+	case "WebFetch":
+		key = "url"
+	case "WebSearch":
+		key = "query"
+	default:
+		return ""
+	}
+	v, ok := probe[key].(string)
+	if !ok || v == "" {
+		return ""
+	}
+	v = strings.ReplaceAll(strings.ReplaceAll(v, "\n", " "), "\r", "")
+	return truncate(v, 80) // rune-safe: never split a multibyte char (e.g. Korean paths)
+}
 
 // parseRunResult extracts the worker result text from a claude json envelope.
 func parseRunResult(stdout string) (RunResult, error) {

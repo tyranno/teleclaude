@@ -97,9 +97,10 @@ func LoadConfig(path string) (*Config, error) {
 		ManagerModel:    "haiku",
 		TimeoutMinutes:  10,
 		ManagerAlways:   true,
-		MaxWorkers:      3,
-		RateLimitPerMin: 20,
-		AllowScripts:    false,
+		MaxWorkers:          3,
+		RateLimitPerMin:     20,
+		AllowScripts:        false,
+		ConversationTTLDays: 30,
 	}
 
 	sc := bufio.NewScanner(f)
@@ -183,6 +184,14 @@ func applyConfigKV(cfg *Config, key, val string) error {
 		}
 	case "ALLOW_SCRIPTS":
 		cfg.AllowScripts = parseBool(val, false)
+	case "CONVERSATION_TTL_DAYS":
+		if val != "" {
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 0 {
+				return fmt.Errorf("CONVERSATION_TTL_DAYS는 0 이상 정수여야 합니다: %q", val)
+			}
+			cfg.ConversationTTLDays = n
+		}
 	case "ALLOWED_SCRIPT_COMMANDS":
 		for _, cmd := range strings.Split(val, ",") {
 			if c := strings.TrimSpace(cmd); c != "" {

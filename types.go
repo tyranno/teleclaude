@@ -29,6 +29,7 @@ type Config struct {
 	ScreenControl         bool     // screen-control MCP 활성화 (Windows). 기본 false
 	ScreenPresetsFile     string   // 좌표 프리셋 파일 경로. 빈 값이면 ~/.teleclaude/presets.json
 	ScreenElevated        bool     // 관리자 권한으로 실행해 관리자 대상 앱도 제어 (Windows UIPI 우회). 기본 false
+	ConversationTTLDays   int      // 이 기간(일) 동안 활동 없는 대화/히스토리 파일을 자동 정리. 0 = 비활성화, 기본 30
 }
 
 // ConversationTurn represents one exchange in a conversation.
@@ -145,6 +146,14 @@ type RunRequest struct {
 	SessionID string // UUID
 	Resume    bool   // true → --resume, false → --session-id
 	Model     string
+
+	// OnProgress, when non-nil, requests realtime NDJSON streaming from the
+	// backend and is called with a short human-readable line for each tool-use
+	// event as it happens (e.g. "🔧 Bash: go test ./..."). Optional — nil means
+	// the backend runs its normal single-envelope turn. Currently only honored
+	// by claudeRunner; codexRunner ignores it (codex already streams JSONL events
+	// via logCodexEvent).
+	OnProgress func(string)
 }
 
 type RunResult struct {
