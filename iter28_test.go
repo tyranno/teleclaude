@@ -242,6 +242,29 @@ func TestIsContextOverflow_UnrelatedError(t *testing.T) {
 	}
 }
 
+// ---- isSessionNotFound ----
+
+func TestIsSessionNotFound_NoConversation(t *testing.T) {
+	if !isSessionNotFound("Error: No conversation found with session ID: abc-123") {
+		t.Error("'No conversation found' should match")
+	}
+}
+
+func TestIsSessionNotFound_SessionNotFound(t *testing.T) {
+	if !isSessionNotFound("session not found") {
+		t.Error("'session not found' should match")
+	}
+}
+
+func TestIsSessionNotFound_Unrelated(t *testing.T) {
+	if isSessionNotFound("prompt is too long") {
+		t.Error("unrelated (overflow) error should not match")
+	}
+	if isSessionNotFound("connection refused") {
+		t.Error("unrelated error should not match")
+	}
+}
+
 func TestIsContextOverflow_CaseInsensitive(t *testing.T) {
 	if !isContextOverflow("PROMPT IS TOO LONG") {
 		t.Error("case-insensitive match should work")

@@ -306,6 +306,15 @@ func isContextOverflow(text string) bool {
 		strings.Contains(lower, "context window")
 }
 
+// isSessionNotFound detects a lost/absent CLI session — e.g. `--resume <id>`
+// after a bot restart or CLI update, where the session store no longer has that
+// ID. The CLI exits non-zero with "No conversation found with session ID: ...".
+func isSessionNotFound(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "no conversation found") ||
+		strings.Contains(lower, "session not found")
+}
+
 // workerModelForBackend returns the right model string based on the active backend.
 func (m *Manager) workerModelForBackend() string {
 	if m.Backend() == "codex" {
@@ -426,10 +435,35 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 			_ = m.workerStatus.UpdateStatus(project, workConv.ID, "timeout", ctx.Err().Error())
 			return
 		}
-		log.Printf("[worker] ✗ backend=%s error after %s: %v", backend, elapsed, err)
-		_ = s.Send(chatID, "⚠️ 작업 실패: "+err.Error())
-		_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
-		return
+		// If --resume hard-failed because the CLI session was lost (bot restart or
+		// CLI update dropped the session store), retry once as a fresh session. The
+		// prompt already carries the recent-history reminder, so the conversation
+		// continues seamlessly instead of dead-ending on an error.
+		if workConv.Started && isSessionNotFound(err.Error()) {
+			log.Printf("[worker] session lost (%v) — retrying once without --resume", err)
+			_ = s.Send(chatID, "🔄 세션을 새로 시작해 대화를 이어갑니다...")
+			res, err = client.Run(ctx, RunRequest{
+				Prompt:    prompt,
+				WorkDir:   workDir,
+				SessionID: workConv.SessionID,
+				Resume:    false,
+				Model:     workerModel,
+			})
+			elapsed = time.Since(startTime)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				log.Printf("[worker] ✗ backend=%s context cancelled/timeout after %s", backend, elapsed)
+				_ = m.workerStatus.UpdateStatus(project, workConv.ID, "timeout", ctx.Err().Error())
+				return
+			}
+			log.Printf("[worker] ✗ backend=%s error after %s: %v", backend, elapsed, err)
+			_ = s.Send(chatID, "⚠️ 작업 실패: "+err.Error())
+			_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", err.Error())
+			return
+		}
+		log.Printf("[worker] ✅ (session-recovered) backend=%s elapsed=%s output=%d bytes session=%q",
+			backend, elapsed, len(res.Text), res.SessionID)
 	}
 
 	log.Printf("[worker] ✅ backend=%s elapsed=%s output=%d bytes session=%q",
