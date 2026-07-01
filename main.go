@@ -236,6 +236,12 @@ func run(configOverride, handoffReadyFile, notifyChat string) error {
 	// ConversationTTLDays (default 30d, 0 disables). Runs once at startup then daily.
 	go func() {
 		runPrune := func() {
+			// A prune panic must not kill the daily ticker; contain it per run.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[maintenance] prune panic recovered: %v", r)
+				}
+			}()
 			ttl := holder.Get().ConversationTTLDays
 			if n, perr := store.PruneOldConversations(ttl); perr != nil {
 				log.Printf("[maintenance] conversation prune failed: %v", perr)

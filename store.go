@@ -250,8 +250,10 @@ func (s *fileStore) SetStoredBackend(name string) error {
 }
 
 // PruneOldConversations removes conversations whose LastActivity is older than
-// ttlDays, skipping the currently active conversation. ttlDays <= 0 disables
-// pruning (returns 0, nil). Returns the number of conversations removed.
+// ttlDays. It never prunes the active conversation OR any ancestor in its
+// continuation chain (walking ParentID upward), so pruning can never sever the
+// live conversation's context lineage. ttlDays <= 0 disables pruning
+// (returns 0, nil). Returns the number of conversations removed.
 func (s *fileStore) PruneOldConversations(ttlDays int) (int, error) {
 	if ttlDays <= 0 {
 		return 0, nil
@@ -259,11 +261,27 @@ func (s *fileStore) PruneOldConversations(ttlDays int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Protect the active conversation and its ancestor chain from pruning.
+	protected := map[string]bool{}
+	if ap := s.data.Projects[s.data.Active.Project]; ap != nil {
+		for id := s.data.Active.ConversationID; id != ""; {
+			if protected[id] {
+				break // cycle guard
+			}
+			protected[id] = true
+			c, ok := ap.Conversations[id]
+			if !ok {
+				break
+			}
+			id = c.ParentID
+		}
+	}
+
 	cutoff := time.Now().UTC().AddDate(0, 0, -ttlDays)
 	removed := 0
 	for projName, p := range s.data.Projects {
 		for id, c := range p.Conversations {
-			if projName == s.data.Active.Project && id == s.data.Active.ConversationID {
+			if projName == s.data.Active.Project && protected[id] {
 				continue
 			}
 			if c.LastActivity.Before(cutoff) {

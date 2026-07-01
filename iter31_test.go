@@ -77,6 +77,47 @@ func TestPruneOldConversations_SkipsActiveConversation(t *testing.T) {
 	}
 }
 
+func TestPruneOldConversations_ProtectsActiveAncestorChain(t *testing.T) {
+	s := newTestStore(t)
+	dir := t.TempDir()
+	if err := s.AddProject("myapp", dir); err != nil {
+		t.Fatalf("AddProject: %v", err)
+	}
+	// Old parent conversation — would normally be pruned...
+	parent, err := s.NewConversation("myapp", "old-parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent.LastActivity = time.Now().UTC().AddDate(0, 0, -100)
+	if err := s.UpdateConversation("myapp", parent); err != nil {
+		t.Fatal(err)
+	}
+	// ...but it is the ancestor of the (also old) active continuation.
+	child, err := s.NewConversation("myapp", "active-child")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child.ParentID = parent.ID
+	child.LastActivity = time.Now().UTC().AddDate(0, 0, -100)
+	if err := s.UpdateConversation("myapp", child); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetActive("myapp", child.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.PruneOldConversations(30)
+	if err != nil {
+		t.Fatalf("PruneOldConversations: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("removed = %d, want 0 (active chain ancestor must survive)", n)
+	}
+	if _, ok := s.GetConversation("myapp", parent.ID); !ok {
+		t.Error("active conversation's ancestor should not have been pruned")
+	}
+}
+
 func TestPruneOldConversations_TTLZeroDisables(t *testing.T) {
 	s := newTestStore(t)
 	dir := t.TempDir()
