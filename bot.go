@@ -332,7 +332,11 @@ func (b *Bot) handleScreen(chatID int64, fields []string) {
 		return
 	}
 	if img != nil {
-		_ = b.SendPhoto(chatID, img, text)
+		if perr := b.SendPhoto(chatID, img, text); perr != nil {
+			// e.g. image exceeds Telegram's photo size limit — tell the user
+			// instead of silently dropping the capture.
+			_ = b.Send(chatID, "⚠️ 캡처는 됐지만 이미지 전송 실패: "+perr.Error())
+		}
 		return
 	}
 	_ = b.Send(chatID, text)

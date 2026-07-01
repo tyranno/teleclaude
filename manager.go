@@ -442,6 +442,22 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 		if workConv.Started && isSessionNotFound(err.Error()) {
 			log.Printf("[worker] session lost (%v) — retrying once without --resume", err)
 			_ = s.Send(chatID, "🔄 세션을 새로 시작해 대화를 이어갑니다...")
+			// The retry is a full fresh turn (may take a while); keep a heartbeat
+			// alive for it — the original one was already closed above.
+			recoverDone := make(chan struct{})
+			go func() {
+				ticker := time.NewTicker(2 * time.Minute)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						e := time.Since(startTime)
+						_ = s.Send(chatID, fmt.Sprintf("⏳ 세션 복구 진행 중... (%d분 %d초 경과)", int(e.Minutes()), int(e.Seconds())%60))
+					case <-recoverDone:
+						return
+					}
+				}
+			}()
 			res, err = client.Run(ctx, RunRequest{
 				Prompt:    prompt,
 				WorkDir:   workDir,
@@ -449,6 +465,7 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text, project, wo
 				Resume:    false,
 				Model:     workerModel,
 			})
+			close(recoverDone)
 			elapsed = time.Since(startTime)
 		}
 		if err != nil {
