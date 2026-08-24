@@ -16,7 +16,10 @@
 set -euo pipefail
 
 SSH_HOST="${1:-nanopi}"
-REMOTE_PATH="${2:-~/aglink}"
+# NOT ~/aglink: that path is the service's default working home (defaultHomeDir
+# in homedir.go). Dropping the binary there makes every worker's cwd a file, and
+# claude then fails to start with "fork/exec ...: not a directory".
+REMOTE_PATH="${2:-~/bin/aglink}"
 GOARCH="${GOARCH:-arm64}"
 BINARY="aglink-linux-${GOARCH}"
 
@@ -24,6 +27,7 @@ echo "▶ 빌드: linux/${GOARCH} → ${BINARY}"
 GOOS=linux GOARCH="${GOARCH}" go build -o "${BINARY}" ./...
 
 echo "▶ 배포: ${BINARY} → ${SSH_HOST}:${REMOTE_PATH}"
+ssh "${SSH_HOST}" "mkdir -p \$(dirname ${REMOTE_PATH})"
 scp "${BINARY}" "${SSH_HOST}:${REMOTE_PATH}"
 ssh "${SSH_HOST}" "chmod +x ${REMOTE_PATH}"
 

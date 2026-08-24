@@ -12,11 +12,24 @@
 
 set -euo pipefail
 
-BINARY="${1:-$HOME/aglink}"
+# NOTE: the binary must NOT live at ~/aglink — that path is the service's default
+# working home (see defaultHomeDir in homedir.go), so a file there makes every
+# worker's cwd a non-directory and claude fails to exec with ENOTDIR.
+BINARY="${1:-$HOME/bin/aglink}"
 SERVICE_NAME="aglink"
 SERVICE_FILE="${HOME}/.config/systemd/user/${SERVICE_NAME}.service"
-LOG_DIR="${HOME}/.aglink/logs"
-CONFIG_FILE="${HOME}/.aglink/config.txt"
+
+# Data dir must match dataDir() in config.go: ~/.aglink normally, but a
+# pre-rename ~/.teleclaude is used in place when ~/.aglink does not exist.
+# Creating ~/.aglink here on a legacy install would silently strand the old
+# store.json / tasks.json / history the service is still meant to read.
+DATA_DIR="${HOME}/.aglink"
+if [[ ! -d "${DATA_DIR}" && -d "${HOME}/.teleclaude" ]]; then
+    DATA_DIR="${HOME}/.teleclaude"
+    echo "ℹ  pre-rename 데이터 디렉터리 사용: ${DATA_DIR}"
+fi
+LOG_DIR="${DATA_DIR}/logs"
+CONFIG_FILE="${DATA_DIR}/config.txt"
 
 # 사전 검사
 if [[ ! -x "${BINARY}" ]]; then
@@ -25,7 +38,7 @@ if [[ ! -x "${BINARY}" ]]; then
     exit 1
 fi
 
-if [[ ! -f "${CONFIG_FILE}" ]]; then
+if [[ ! -f "${CONFIG_FILE}" && ! -f "${DATA_DIR}/config.yaml" ]]; then
     echo "⚠  설정 파일이 없습니다: ${CONFIG_FILE}"
     echo "   서비스 등록 전에 다음 중 하나를 실행하세요:"
     echo "     1) ${BINARY} run      (설정 마법사 — 대화형 터미널 필요)"
