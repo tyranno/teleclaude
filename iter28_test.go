@@ -265,6 +265,35 @@ func TestIsSessionNotFound_Unrelated(t *testing.T) {
 	}
 }
 
+// ---- isAuthFailure ----
+
+// The exact body the CLI returns (exit 0) when the stored OAuth token has
+// lapsed — the string that was being recorded as an assistant answer.
+func TestIsAuthFailure_ExpiredOAuthToken(t *testing.T) {
+	const body = "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
+	if !isAuthFailure(body) {
+		t.Error("expired-OAuth body should match")
+	}
+}
+
+func TestIsAuthFailure_CodexNotLoggedIn(t *testing.T) {
+	if !isAuthFailure("stream error: You are not logged in") {
+		t.Error("codex 'not logged in' should match")
+	}
+}
+
+func TestIsAuthFailure_Unrelated(t *testing.T) {
+	if isAuthFailure("No conversation found with session ID: abc-123") {
+		t.Error("lost-session error should not match")
+	}
+	if isAuthFailure("prompt is too long") {
+		t.Error("overflow error should not match")
+	}
+	if isAuthFailure("오늘은 조건에 맞는 종목이 없습니다.") {
+		t.Error("a normal answer should not match")
+	}
+}
+
 func TestIsContextOverflow_CaseInsensitive(t *testing.T) {
 	if !isContextOverflow("PROMPT IS TOO LONG") {
 		t.Error("case-insensitive match should work")

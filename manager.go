@@ -754,6 +754,24 @@ func isSessionNotFound(text string) bool {
 		strings.Contains(lower, "no rollout found")
 }
 
+// isAuthFailure detects a turn that produced no answer because the CLI could not
+// authenticate — e.g. the OAuth access token in ~/.claude/.credentials.json
+// expired and could not be refreshed. The CLI exits 0 and puts the message in
+// the result body ("Failed to authenticate. API Error: 401 OAuth access token
+// has expired. Re-authenticate to continue."), so without this check the worker
+// records the error string as the assistant's answer, relays it to the user, and
+// — worse — marks the conversation Started while no CLI session was ever
+// created. Every later turn then resumes a session id that does not exist and
+// dies with "No conversation found with session ID".
+func isAuthFailure(text string) bool {
+	lower := strings.ToLower(text)
+	return strings.Contains(lower, "failed to authenticate") ||
+		strings.Contains(lower, "oauth access token has expired") ||
+		strings.Contains(lower, "re-authenticate to continue") ||
+		// codex reports an expired/absent login this way.
+		strings.Contains(lower, "not logged in")
+}
+
 // workerModelForBackend returns the right model string based on the active backend.
 func (m *Manager) workerModelForBackend() string {
 	return m.workerModelForBackendName(m.Backend())
@@ -1184,6 +1202,20 @@ func (m *Manager) runWorker(ctx context.Context, chatID int64, text string, sink
 	log.Printf("[worker] ✅ backend=%s elapsed=%s output=%d bytes session=%q",
 		backend, elapsed, len(res.Text), res.SessionID)
 	m.recordTurnDuration(backend, elapsed)
+
+	// The CLI can fail to authenticate and still exit 0, putting the 401 in the
+	// result body. Bail out before the turn is recorded and before Started is
+	// set: the run produced no answer and no CLI session, so treating it as a
+	// normal turn would both relay the raw error as if it were the assistant's
+	// reply and leave the conversation pinned to a session id that never
+	// existed — every later turn would then die on --resume.
+	if isAuthFailure(res.Text) {
+		log.Printf("[worker] ✗ backend=%s auth failure after %s: %s", backend, elapsed, strings.TrimSpace(res.Text))
+		_ = s.Send(chatID, "⚠️ 작업 실패: Claude CLI 인증 만료 — 토큰을 갱신해 주세요.\n"+
+			"`claude setup-token` 으로 발급한 값을 config의 CLAUDE_CODE_OAUTH_TOKEN 에 넣고 재시작하면 됩니다.")
+		_ = m.workerStatus.UpdateStatus(project, workConv.ID, "failed", "auth: "+strings.TrimSpace(res.Text))
+		return
+	}
 
 	// Reactive: if Worker hit Claude's context limit, auto-create continuation and retry once.
 	if res.IsError && isContextOverflow(res.Text) {
