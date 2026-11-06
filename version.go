@@ -15,7 +15,7 @@ import (
 // automatically (v1.1.<count>), giving a human-comparable "newer > older".
 const (
 	versionMajor = 1
-	versionMinor = 1
+	versionMinor = 2
 )
 
 // Injected at build time via -ldflags (see handleUpdate). All empty on a plain
